@@ -389,7 +389,7 @@ select.input { appearance: auto; }
   font-size: 12.5px; line-height: 1.6; color: var(--text);
 }
 .codeblock .copy { position: absolute; top: 6px; right: 6px; }
-.codeblock pre { padding-right: 76px; }
+.codeblock pre { padding-right: 76px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .snippets { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .snippet, .codeblock { min-width: 0; }
