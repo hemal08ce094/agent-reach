@@ -29,7 +29,7 @@ _RDT_GIT_SOURCE = "git+https://github.com/public-clis/rdt-cli.git@5e4fb3720d5c17
 
 class RedditChannel(Channel):
     name = "reddit"
-    description = "Reddit 帖子和评论"
+    description = "Reddit posts and comments"
     backends = ["OpenCLI", "rdt-cli"]
     tier = 1  # no zero-config path exists — see module docstring
 
@@ -62,13 +62,14 @@ class RedditChannel(Channel):
             return "error", "\n".join(m for _, _, m in findings)
 
         return "off", (
-            "未安装任何 Reddit 后端。注意：Reddit 没有零配置路径"
-            "（匿名 .json 已被封，官方 API 需人工审批），必须用登录态。推荐：\n"
-            "  桌面：agent-reach install --system --channels opencli\n"
-            "       （复用 Chrome 登录态，登录过 reddit.com 即可用）\n"
-            f"  服务器/存量：pipx install '{_RDT_GIT_SOURCE}'\n"
-            "       然后 `rdt login` 或手动写入 Cookie（见 doctor 提示）\n"
-            "中国大陆访问 Reddit 需要代理"
+            "No Reddit backend installed. Note: Reddit has no zero-config path "
+            "(anonymous .json is blocked and the official API needs manual approval), "
+            "so a logged-in session is required. Recommended:\n"
+            "  Desktop: agent-reach install --system --channels opencli\n"
+            "       (reuses the Chrome login; works once you are logged in to reddit.com)\n"
+            f"  Server/existing installs: pipx install '{_RDT_GIT_SOURCE}'\n"
+            "       then `rdt login` or write the cookie manually (see doctor hints)\n"
+            "Accessing Reddit from mainland China requires a proxy"
         )
 
     def _check_opencli(self):
@@ -82,8 +83,9 @@ class RedditChannel(Channel):
             return "error", st.hint
         if st.ready:
             return "warn", (
-                "OpenCLI 桥接已连接，但 Reddit 登录态和实际命令未实时验证；"
-                "Doctor 不执行平台命令，因此当前不标记为可用。"
+                "OpenCLI bridge connected, but the Reddit login and real commands were "
+                "not verified live; Doctor does not run platform commands, so it is not "
+                "marked available."
             )
         return "warn", st.hint
 
@@ -100,12 +102,12 @@ class RedditChannel(Channel):
             )
         except PrivatePathError as exc:
             return "warn", (
-                f"rdt-cli 已安装，但 credential.json 无法安全读取：{exc}。"
+                f"rdt-cli is installed, but credential.json cannot be read safely: {exc}."
             )
         except OSError:
             return "warn", (
-                "rdt-cli 已安装，但 credential.json 无法安全读取；"
-                "Doctor 未执行会自动刷新 Cookie 的 `rdt status`。"
+                "rdt-cli is installed, but credential.json cannot be read safely; "
+                "Doctor did not run `rdt status`, which refreshes cookies automatically."
             )
         if payload is None:
             return "warn", self._rdt_login_hint()
@@ -113,8 +115,9 @@ class RedditChannel(Channel):
             data = json.loads(payload)
         except (UnicodeError, json.JSONDecodeError, ValueError):
             return "warn", (
-                "rdt-cli 已安装，但保存的 credential.json 无法安全解析；"
-                "Doctor 未执行会自动刷新 Cookie 的 `rdt status`。"
+                "rdt-cli is installed, but the saved credential.json cannot be parsed "
+                "safely; Doctor did not run `rdt status`, which refreshes cookies "
+                "automatically."
             )
         if not isinstance(data, dict):
             return "warn", self._rdt_login_hint()
@@ -127,25 +130,27 @@ class RedditChannel(Channel):
             time.time() - saved_at > _CREDENTIAL_TTL_SECONDS
         ):
             return "warn", (
-                "rdt-cli 已安装，保存的 Cookie 已超过 7 天；Doctor 不会让"
-                "上游自动读取浏览器或刷新文件，请用 Cookie-Editor 明确更新。"
+                "rdt-cli is installed, but the saved cookies are over 7 days old; Doctor "
+                "will not let upstream read the browser or refresh the file automatically. "
+                "Update them explicitly with Cookie-Editor."
             )
         return "warn", (
-            "rdt-cli 已安装并检测到显式保存的 Reddit Cookie；Doctor 为避免"
-            "上游自动刷新浏览器 Cookie，不执行 `rdt status`，因此未实时验证。"
+            "rdt-cli is installed and an explicitly saved Reddit cookie was found; to "
+            "keep upstream from refreshing browser cookies, Doctor does not run "
+            "`rdt status`, so it was not verified live."
         )
 
     @staticmethod
     def _rdt_login_hint():
         return (
-            "rdt-cli 已安装但没有可用的显式 Cookie。请使用 Cookie-Editor：\n"
-            "  1. Chrome 应用商店安装 Cookie-Editor 扩展：\n"
+            "rdt-cli is installed but has no usable explicit cookie. Use Cookie-Editor:\n"
+            "  1. Install the Cookie-Editor extension from the Chrome Web Store:\n"
             "     https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm\n"
-            "  2. 在浏览器打开 reddit.com（确保已登录）\n"
-            "  3. 点击 Cookie-Editor 图标，找到 `reddit_session`，复制其 Value\n"
-            f"  4. 将以下内容写入 {_CREDENTIAL_FILE}：\n"
-            '     {"cookies": {"reddit_session": "<粘贴 Value>"}, '
-            '"source": "manual", "username": "<你的用户名>", '
+            "  2. Open reddit.com in the browser (make sure you are logged in)\n"
+            "  3. Click the Cookie-Editor icon, find `reddit_session` and copy its Value\n"
+            f"  4. Write the following into {_CREDENTIAL_FILE}:\n"
+            '     {"cookies": {"reddit_session": "<paste Value>"}, '
+            '"source": "manual", "username": "<your username>", '
             '"modhash": null, "saved_at": 0, "last_verified_at": null}\n\n'
-            "Doctor 不会运行会自动读取浏览器并写文件的 `rdt status`。"
+            "Doctor will not run `rdt status`, which reads the browser and writes files automatically."
         )

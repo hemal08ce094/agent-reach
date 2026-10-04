@@ -49,7 +49,7 @@ def test_check_warn_on_exception_clears_backend():
     with patch.object(v2, "_get_json", side_effect=OSError("no proxy")):
         status, message = ch.check()
     assert status == "warn"
-    assert "连接失败" in message
+    assert "connection failed" in message
     assert ch.active_backend is None
 
 

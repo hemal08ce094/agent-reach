@@ -2,57 +2,52 @@
 name: agent-reach
 description: >
   MUST USE when user wants to research/search/look up/find anything on the
-  internet — e.g. "research this topic", "do a deep dive on X", "search the
+  internet, e.g. "research this topic", "do a deep dive on X", "search the
   web for X", "see what people say about X", "look this up".
 
   Also MUST USE when user mentions any platform or shares any URL/link:
-  Twitter/X, Reddit, Facebook, Instagram, YouTube, GitHub, Bilibili, XiaoHongShu,
-  Xiaoyuzhou Podcast, LinkedIn/Boss直聘/jobs/recruiting, V2EX, Xueqiu (stocks), RSS.
+  Twitter/X, Reddit, Facebook, Instagram, YouTube, GitHub, Bilibili, Xiaohongshu,
+  Xiaoyuzhou Podcast, LinkedIn/Boss Zhipin/jobs/recruiting, V2EX, Xueqiu (stocks), RSS.
 
   16 platforms, multi-backend routing (OpenCLI / per-platform CLIs / APIs).
   Zero config for 6 channels. Run `agent-reach doctor --json` to see which
   backend serves each platform right now.
 
-  NOT for: writing reports/analysis/translation (this skill only FETCHES
-  internet content); posting/commenting/liking (write operations); platforms
-  that already have a dedicated skill installed (prefer that skill).
+  NOT for: writing/analysis/translation of content (this skill only FETCHES),
+  posting/commenting/liking, or platforms with a dedicated skill.
+
+  [Routing] SKILL.md has the routing table; read references/*.md per category as needed.
 metadata:
-  homepage: https://github.com/Panniantong/Agent-Reach
+  homepage: https://github.com/hemal08ce094/agent-reach
 ---
 
 # Agent Reach — internet capability router
 
-16 platforms, multiple backends each. **When this skill exists, use it for
-these platforms — do not invent your own approach.**
+16 platforms, multiple backends each. **When this skill exists, you must use it to access these platforms; do not invent your own approach.**
 
 ## Standing rules (apply for the whole session)
 
-1. **Health-check before acting**: for multi-backend/login-backed platforms (XiaoHongShu /
-   Reddit / Bilibili / Twitter / Facebook / Instagram), run `agent-reach doctor --json` first.
-   Use a populated `active_backend`; `active_backend: null` means Doctor deliberately skipped a
-   live probe to avoid browser-cookie reads or remote writes, not that no backend exists. Only when
-   the user's task requires that platform, run the reference's read-only command to verify it.
-2. **Announce what you use**: say "using agent-reach, platform X via backend Y"
-   before starting.
-3. **On failure, follow the retry chains in references/** — never guess
-   commands.
-4. **For broad research tasks**: combine platforms (Exa for web search +
-   Twitter/Reddit for discussions + XiaoHongShu/Bilibili for Chinese
-   perspectives), collect in parallel, then synthesize.
-5. **Watch versions for the user**: after finishing a substantial
-   multi-platform task, run `agent-reach check-update` (fast, one API call).
-   If a new version exists, append one line to your wrap-up: "Agent Reach
-   vX.Y.Z is available — paste this to me to update: 帮我更新 Agent Reach：
-   https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/update.md".
-   Never interrupt the current task to update; never nag about the same version twice.
+1. **Health-check before acting**: for multi-backend / login-backed platforms (Xiaohongshu / Reddit / Bilibili / Twitter / Facebook / Instagram / Boss Zhipin), run
+   `agent-reach doctor --json` first. When `active_backend` has a value, pick the command group by it; `active_backend: null`
+   means Doctor deliberately skipped a live probe to avoid browser-cookie reads or remote writes, not that no backend exists.
+   A Doctor result is a snapshot at one point in time; channels / login state may have changed. Before running a read-only command, if you suspect it has gone stale,
+   re-confirm using the "health check and recovery" runbook in the matching reference (e.g. the Boss Zhipin CDP troubleshooting in career.md).
+2. **Announce what you use**: before starting, say "using agent-reach, platform X via backend Y".
+3. **On failure, follow the retry chains in references/**; never guess commands.
+4. **For broad research tasks**: combine platforms (Exa for web search + Twitter/Reddit for discussions + Xiaohongshu/Bilibili for Chinese-language perspectives), collect in parallel, then synthesize.
+5. **Watch versions for the user**: after finishing a substantial research / multi-platform task, also run
+   `agent-reach check-update` (fast, one API call). If a new version exists, append one line to your wrap-up:
+   "Agent Reach vX.Y.Z is available — paste this to me to update: Update Agent Reach:
+   https://raw.githubusercontent.com/hemal08ce094/agent-reach/main/docs/update.md".
+   Never interrupt the current task to update, and never nag about the same version twice.
 
 ## Routing table
 
 | User intent | Category | Details |
 |---------|------|---------|
 | Web / code search | search | [references/search.md](references/search.md) |
-| XiaoHongShu / Twitter / Bilibili / V2EX / Reddit / Facebook / Instagram | social | [references/social.md](references/social.md) |
-| Jobs / LinkedIn | career | [references/career.md](references/career.md) |
+| Xiaohongshu / Twitter / Bilibili / V2EX / Reddit / Facebook / Instagram | social | [references/social.md](references/social.md) |
+| Jobs / recruiting / LinkedIn / Boss Zhipin | career | [references/career.md](references/career.md) |
 | GitHub / code | dev | [references/dev.md](references/dev.md) |
 | Web pages / articles / RSS | web | [references/web.md](references/web.md) |
 | YouTube / Bilibili / podcast transcripts | video | [references/video.md](references/video.md) |
@@ -70,7 +65,7 @@ curl -s "https://r.jina.ai/URL"
 # GitHub search
 gh search repos "query" --sort stars --limit 10
 
-# YouTube subtitles (never use yt-dlp for Bilibili; retry chain in video.md)
+# YouTube subtitles (note: never use yt-dlp for Bilibili; retry chain in video.md)
 yt-dlp --write-sub --write-auto-sub --skip-download -o "/tmp/%(id)s" "URL"
 
 # V2EX hot topics
@@ -80,31 +75,51 @@ curl -s "https://www.v2ex.com/api/topics/hot.json" -H "User-Agent: agent-reach/1
 bili search "query" --type video -n 5
 ```
 
-## Login-backed platforms (pick by doctor's active_backend)
+## Login-backed platforms (pick commands by doctor's active_backend)
 
-Twitter boundary: cookies saved by `agent-reach configure twitter-cookies`
-are used only by `doctor` to check whether explicit credentials are present.
-`doctor` does not run `twitter status` or configure the current shell. Before
-calling `twitter` directly, explicitly provide `TWITTER_AUTH_TOKEN` and
-`TWITTER_CT0` in the child-process environment without logging their values.
+Twitter note: cookies saved by `agent-reach configure twitter-cookies` are used only by
+`doctor` to check whether the configuration is complete; `doctor` does not run `twitter status` and does not modify the current
+Shell. Before running `twitter` directly, you must explicitly provide `TWITTER_AUTH_TOKEN` and
+`TWITTER_CT0` in the child-process environment, and must not expose the values in logs or command echo.
 
-XiaoHongShu boundary: Agent Reach must not log the user in or read browser
-cookies. OpenCLI may use only an existing Chrome session explicitly controlled
-by the user. If none exists, do not automate login; use a manual Cookie-Editor
-export with xiaohongshu-mcp or a legacy tool instead.
+Xiaohongshu note: Agent Reach does not log in for the user and does not read browser cookies. OpenCLI only uses a
+Chrome session that already exists and is explicitly controlled by the user; when there is no existing session, do not log in automatically; instead use a
+manual Cookie-Editor export and configure xiaohongshu-mcp / the legacy tool.
+
+Boss Zhipin setup trigger: when the user says "help me set up Boss Zhipin", first read the Boss section of `references/career.md`,
+then, once install authorisation is given, run
+`agent-reach install --env=local --system --channels=boss`. The Agent launches, per OS, a dedicated Chrome
+bound only to `127.0.0.1:9222`; **the first step after launch is to pause and have the user visually confirm**
+that the window is logged in (avatar at the top right); if not logged in, have the user log in / scan the QR code, and once the user confirms, run
+`boss --cdp-url http://localhost:9222 login --cdp` and `agent-reach doctor` to verify.
+Do not make the user work out the port parameters.
+The dedicated Chrome profile must be reused long term; do not create a new one each time, and do not switch to the daily main Chrome by default.
+
+To judge the login state of the CDP browser, **do not trust `boss status`** (it only validates the local session.enc, which says nothing about
+the browser's login state); rely on the browser cookie probe (wt2) in `agent-reach doctor`,
+together with the user's visual confirmation. Never judge login state from the current page URL:
+the `security-check` / `zhipin-security` / `_security_check` security pages are Boss's anti-bot challenge,
+unrelated to login: they appear even when logged in (almost always in Chrome with a CDP debugging port). When you see one, do not
+treat it as "not logged in"; run `agent-reach doctor` and check the browser cookie first, then decide whether the user needs to log in.
+`AUTH_EXPIRED` from a search is the ground truth for a logged-out browser: go straight to the login flow + `login --cdp`,
+and do not interpret it as a security check.
+
+When running a search you must use
+`boss --browser-source existing-browser --cdp-url http://localhost:9222 search ...`;
+on `ENVIRONMENT_RISK`, stop immediately: no refreshing, no logging in again, no automatic retry.
 
 ```bash
 # Twitter search (twitter-cli preferred; retry chain in social.md)
 twitter search "query" -n 10
 
-# Reddit (NO zero-config path — OpenCLI or rdt-cli, login required)
+# Reddit (no zero-config path: OpenCLI or rdt-cli, login required)
 opencli reddit search "query" -f yaml   # desktop
 rdt search "query" --limit 10            # legacy/server
 
-# XiaoHongShu (desktop prefers OpenCLI)
+# Xiaohongshu (desktop prefers OpenCLI)
 opencli xiaohongshu search "query" -f yaml
 
-# Facebook / Instagram (desktop OpenCLI, browser session)
+# Facebook / Instagram (desktop OpenCLI, reuses the browser login)
 opencli facebook search "query" -f yaml
 opencli facebook groups -f yaml
 opencli instagram search "query" -f yaml       # user search
@@ -114,61 +129,35 @@ opencli instagram user USERNAME -f yaml        # recent posts from one user
 ## Environment check
 
 ```bash
-# Channel availability + which backend serves each platform
+# Channel availability + the backend currently active for each platform
 agent-reach doctor --json
 ```
 
-When the user asks “help me configure Boss Zhipin” / “帮我配 Boss直聘”, read the
-Boss section in `references/career.md`. After explicit install approval, run
-`agent-reach install --env=local --system --channels=boss`, launch the dedicated
-loopback-only Chrome profile for their OS, then **pause and have the user visually
-confirm** the window is logged in (avatar in the top-right); if not, have them log
-in manually. Then verify with `boss --cdp-url http://localhost:9222 login --cdp`
-and `agent-reach doctor`. Do not make the user assemble CDP flags.
-Keep reusing the dedicated Chrome profile; do not recreate it for every run or
-switch to the user's daily profile by default. Search with
-`boss --browser-source existing-browser --cdp-url http://localhost:9222 search ...`.
-On `ENVIRONMENT_RISK`, stop without refreshing, relogging, or retrying.
-
-**Do not trust `boss status` for CDP browser login state** — it only validates the
-local `~/.boss-agent/auth/session.enc` store, which does not represent the
-dedicated Chrome profile's cookies that `existing-browser` searches actually use. Use
-the browser `wt2` cookie probe in `agent-reach doctor` plus the user's visual
-confirmation. Never judge login state from the page URL: `security-check` /
-`zhipin-security` / `_security_check` pages are anti-bot challenges that appear
-even when logged in. `AUTH_EXPIRED` from a search is the ground truth for a
-logged-out browser — go straight to the login flow + `login --cdp` instead of
-interpreting it as a security check.
-
 ## Discovering OpenCLI adapters
 
-When the routing table lacks a needed platform or command, run `opencli list`,
-then inspect `opencli <platform> --help`. Discovery proves only that an adapter
-exists, not that authentication or target content works. Run read-only commands
-only when the user's task requires that platform, and require non-empty content.
+When the routing table does not cover a platform or command the user needs, first run `opencli list` to see the existing adapters, then use
+`opencli <platform> --help` to see the public commands. Discovering an adapter only proves the command exists, not that authentication or
+the target content works; run read-only commands only when the user's task clearly needs that platform, and accept the result only on actual non-empty content.
 
 ## Workspace rules
 
-**Never create files in the agent workspace.** Use `/tmp/` for temporary
-output and `~/.agent-reach/` for persistent data.
+**Do not create files in the agent workspace.** Use `/tmp/` for temporary output and `~/.agent-reach/` for persistent data.
 
 ## Detailed references
 
-Read the matching file when you need specifics (commands above cover the
-common cases; references hold per-backend command groups, caveats, retry
-chains — note: reference docs are written in Chinese, commands are universal):
+Read the matching reference for the user's need:
 
 - [Search](references/search.md) — Exa AI search
-- [Social](references/social.md) — XiaoHongShu, Twitter, Bilibili, V2EX, Reddit, Facebook, Instagram (multi-backend/login-backed groups)
-- [Career](references/career.md) — LinkedIn
+- [Social](references/social.md) — Xiaohongshu, Twitter, Bilibili, V2EX, Reddit, Facebook, Instagram (multi-backend / login-backed command groups)
+- [Career](references/career.md) — LinkedIn, Boss Zhipin
 - [Dev](references/dev.md) — GitHub CLI
 - [Web](references/web.md) — Jina Reader, RSS
 - [Video](references/video.md) — YouTube, Bilibili, Xiaoyuzhou
-- [Finance](references/finance.md) — Xueqiu quotes, search and market content
+- [Finance](references/finance.md) — Xueqiu stock quotes, search and trending content
 
 ## Configure a channel
 
 If a channel needs setup, fetch the install guide:
-https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/install.md
+https://raw.githubusercontent.com/hemal08ce094/agent-reach/main/docs/install.md
 
-The user only provides cookies / one extension click; the agent does the rest.
+The user only provides cookies; the agent does the rest of the configuration.

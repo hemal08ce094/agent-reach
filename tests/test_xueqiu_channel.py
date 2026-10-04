@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Dedicated tests for the ``xueqiu`` (雪球) channel.
+"""Dedicated tests for the ``xueqiu`` (Xueqiu) channel.
 
 Xueqiu wraps several public JSON endpoints and does real shaping of the
 responses — normalising quotes, unwrapping the JSON-in-JSON hot-post
@@ -64,7 +64,7 @@ def test_check_warn_when_quote_empty():
     with patch.object(xq, "_get_json", return_value={"data": {"quote": {}}}):
         status, message = ch.check()
     assert status == "warn"
-    assert "为空" in message
+    assert "empty data" in message
     assert ch.active_backend is None
 
 
@@ -74,7 +74,7 @@ def test_check_warn_on_exception():
     with patch.object(xq, "_get_json", side_effect=urllib.error.URLError("refused")):
         status, message = ch.check()
     assert status == "warn"
-    assert "连接失败" in message
+    assert "connection failed" in message
     assert ch.active_backend is None
 
 

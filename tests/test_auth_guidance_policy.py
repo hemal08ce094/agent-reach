@@ -21,6 +21,9 @@ def _policy_documents() -> list[Path]:
 
 def test_xiaohongshu_guidance_never_starts_implicit_login():
     """Do not reintroduce QR or automatic browser-cookie login guidance."""
+    # CJK markers are kept on purpose: they catch upstream Chinese/Japanese/Korean
+    # guidance (XiaoHongShu name, "scan QR code", "auto-extract browser cookies")
+    # if it is ever synced back into the docs.
     xhs_markers = ("xiaohongshu", "小红书", "小紅書", "xhs")
     legacy_auth_markers = (
         "扫码",
@@ -63,21 +66,20 @@ def test_xiaohongshu_opencli_and_export_boundaries_are_truthful():
     )
     for path in boundary_docs:
         text = path.read_text(encoding="utf-8")
-        assert "已经存在且明确控制" in text, path.relative_to(ROOT)
-        assert "不会把 Cookie 注入 OpenCLI" in text, path.relative_to(ROOT)
+        assert "already exists and is explicitly controlled by the user" in text, (
+            path.relative_to(ROOT)
+        )
+        assert "does not inject cookies into OpenCLI" in text, path.relative_to(ROOT)
 
     xhs_guide = boundary_docs[1].read_text(encoding="utf-8")
-    assert "xiaohongshu.com 同域 Cookie 集" in xhs_guide
-    assert "非 xiaohongshu.com 域 Cookie" in xhs_guide
+    assert "set of same-domain xiaohongshu.com cookies" in xhs_guide
+    assert "Cookies from domains other than xiaohongshu.com are ignored" in xhs_guide
 
 
 def test_twitter_operational_docs_explain_the_environment_boundary():
     """Saved cookies help doctor only; direct twitter commands need env vars."""
     operational_docs = (
         ROOT / "README.md",
-        ROOT / "docs" / "README_en.md",
-        ROOT / "docs" / "README_ja.md",
-        ROOT / "docs" / "README_ko.md",
         ROOT / "docs" / "cookie-export.md",
         ROOT / "docs" / "install.md",
         ROOT / "docs" / "troubleshooting.md",
@@ -95,11 +97,11 @@ def test_twitter_operational_docs_explain_the_environment_boundary():
     twitter_guide = (
         ROOT / "agent_reach" / "guides" / "setup-twitter.md"
     ).read_text(encoding="utf-8")
-    assert "不会执行 `twitter status`" in twitter_guide
-    assert "不会修改当前 Shell" in twitter_guide
+    assert "does not run `twitter status`" in twitter_guide
+    assert "does not modify the current shell" in twitter_guide
     assert "Export → Header String" in twitter_guide
     assert "cookie JSON" not in twitter_guide
-    assert "复制全部" not in twitter_guide
+    assert "copy all" not in twitter_guide.lower()
 
     for expected in (
         "--sync-legacy-twitter",
@@ -108,8 +110,8 @@ def test_twitter_operational_docs_explain_the_environment_boundary():
         "~/.config/bird/credentials.env",
     ):
         assert expected in twitter_guide
-    assert "默认只写" in twitter_guide
-    assert "不会自动删除" in twitter_guide
+    assert "By default it only writes" in twitter_guide
+    assert "does not delete them automatically" in twitter_guide
 
     rendered_as_verified = (
         "✅ Twitter/X tweets",
@@ -122,14 +124,10 @@ def test_twitter_operational_docs_explain_the_environment_boundary():
     assert not any(claim in all_text for claim in rendered_as_verified)
 
 
-def test_localized_readmes_keep_current_bilibili_and_xhs_routes():
-    """Translations must not revive retired yt-dlp/Bilibili or XHS defaults."""
-    readmes = (
-        ROOT / "README.md",
-        ROOT / "docs" / "README_en.md",
-        ROOT / "docs" / "README_ja.md",
-        ROOT / "docs" / "README_ko.md",
-    )
+def test_readmes_keep_current_bilibili_and_xhs_routes():
+    """READMEs must not revive retired yt-dlp/Bilibili or XHS defaults."""
+    readmes = sorted(ROOT.glob("README*.md"))
+    assert readmes
 
     for path in readmes:
         text = path.read_text(encoding="utf-8")
@@ -142,9 +140,11 @@ def test_localized_readmes_keep_current_bilibili_and_xhs_routes():
         ), path.relative_to(ROOT)
 
 
-def test_localized_readmes_do_not_advertise_retired_channels():
-    """Japanese and Korean docs must match the channels shipped by the CLI."""
-    for path in (ROOT / "docs" / "README_ja.md", ROOT / "docs" / "README_ko.md"):
+def test_readmes_do_not_advertise_retired_channels():
+    """READMEs must match the channels shipped by the CLI."""
+    readmes = sorted(ROOT.glob("README*.md"))
+    assert readmes
+    for path in readmes:
         text = path.read_text(encoding="utf-8").lower()
         assert "douyin" not in text, path.relative_to(ROOT)
         assert "weibo" not in text, path.relative_to(ROOT)
@@ -165,7 +165,7 @@ def test_public_guidance_never_installs_the_unrelated_pypi_package():
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
             if bare_install.search(line) and (
-                "github.com/Panniantong/agent-reach" not in line
+                "github.com/hemal08ce094/agent-reach" not in line
             ):
                 violations.append(
                     f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}"
@@ -214,7 +214,7 @@ def test_video_reference_has_content_level_youtube_fallbacks():
         ROOT / "agent_reach" / "skill" / "references" / "video.md"
     ).read_text(encoding="utf-8")
     assert "opencli youtube transcript" in text
-    assert "最多重试 3 次" in text
+    assert "retry at most 3 times" in text
     assert "agent-reach transcribe" in text
 
 

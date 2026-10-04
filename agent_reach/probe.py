@@ -38,9 +38,10 @@ class ProbeResult:
 def reinstall_hint(package: str) -> str:
     """Prescription for a broken (stale-venv) CLI install."""
     return (
-        f"命令存在但无法执行——通常是系统 Python 升级后 venv 解释器丢失。重装即可修复：\n"
+        "The command exists but cannot run, usually because a system Python upgrade "
+        "removed the venv interpreter. Reinstalling fixes it:\n"
         f"  uv tool install --force {package}\n"
-        f"或：pipx reinstall {package}"
+        f"or: pipx reinstall {package}"
     )
 
 
@@ -109,7 +110,7 @@ def _run_once(
     except OSError:
         return ProbeResult("broken", hint=reinstall_hint(package))
     except subprocess.TimeoutExpired:
-        return ProbeResult("timeout", hint=f"`{path}` 响应超时（>{timeout}s）")
+        return ProbeResult("timeout", hint=f"`{path}` timed out (>{timeout}s)")
 
     if r.returncode in _BROKEN_EXIT_CODES:
         return ProbeResult("broken", hint=reinstall_hint(package))

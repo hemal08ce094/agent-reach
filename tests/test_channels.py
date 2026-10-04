@@ -69,15 +69,15 @@ class TestOpenCLISiteChannels:
         status, msg = ch.check()
         assert status == "warn"
         assert ch.active_backend is None
-        assert "桥接已连接" in msg
-        assert "登录态和实际命令未实时验证" in msg
+        assert "bridge connected" in msg
+        assert "login and real commands were not verified live" in msg
         assert "facebook.com" in msg
 
         instagram = InstagramChannel()
         status, msg = instagram.check()
         assert status == "warn"
         assert instagram.active_backend is None
-        assert "桥接已连接" in msg
+        assert "bridge connected" in msg
         assert "instagram.com" in msg
 
     def test_opencli_missing_reports_off(self, monkeypatch):
@@ -97,14 +97,14 @@ class TestOpenCLISiteChannels:
             "agent_reach.backends.opencli_status",
             lambda: OpenCLIStatus(
                 installed=True,
-                hint="OpenCLI 已安装，但 Chrome 扩展未安装。",
+                hint="OpenCLI is installed, but the Chrome extension is not.",
             ),
         )
         ch = InstagramChannel()
         status, msg = ch.check()
         assert status == "warn"
         assert ch.active_backend is None
-        assert "Chrome 扩展" in msg
+        assert "Chrome extension" in msg
 
 
 class TestV2EXChannel:
@@ -137,7 +137,7 @@ class TestV2EXChannel:
         )
         status, msg = V2EXChannel().check()
         assert status == "ok"
-        assert "公开 API 可用" in msg
+        assert "Public API available" in msg
 
     def test_check_warn_when_api_unreachable(self, monkeypatch):
         import urllib.request
@@ -148,7 +148,7 @@ class TestV2EXChannel:
         monkeypatch.setattr(urllib.request, "urlopen", raise_error)
         status, msg = V2EXChannel().check()
         assert status == "warn"
-        assert "失败" in msg
+        assert "failed" in msg
 
     def test_check_passes_its_read_only_config_to_cookie_loading(self, monkeypatch):
         """Doctor's config object must flow through instead of reopening config."""
@@ -481,7 +481,7 @@ class TestXueqiuChannel:
         monkeypatch.setattr(xueqiu_mod._opener, "open", lambda req, timeout=None: FakeResponse())
         status, msg = XueqiuChannel().check()
         assert status == "ok"
-        assert "公开 API 可用" in msg
+        assert "Public API available" in msg
 
     def test_check_warn_when_api_unreachable(self, monkeypatch):
         import agent_reach.channels.xueqiu as xueqiu_mod
@@ -494,7 +494,7 @@ class TestXueqiuChannel:
         monkeypatch.setattr(xueqiu_mod._opener, "open", raise_error)
         status, msg = XueqiuChannel().check()
         assert status == "warn"
-        assert "失败" in msg
+        assert "failed" in msg
 
     # ------------------------------------------------------------------ #
     # get_stock_quote
@@ -794,11 +794,11 @@ class TestXueqiuChannel:
 
 
 class TestRedditChannel:
-    """多后端：OpenCLI > rdt-cli，没有零配置路径。"""
+    """Multi-backend: OpenCLI > rdt-cli, with no zero-config path."""
 
     @staticmethod
     def _isolate(monkeypatch, opencli=None):
-        """隔离 OpenCLI 候选（None = 未安装），聚焦 rdt-cli 路径。"""
+        """Isolate the OpenCLI candidate (None = not installed) to focus on rdt-cli."""
         from agent_reach.channels.reddit import RedditChannel
         monkeypatch.setattr(RedditChannel, "_check_opencli", lambda self: opencli)
 
@@ -808,13 +808,13 @@ class TestRedditChannel:
         from agent_reach.channels.reddit import RedditChannel
         status, msg = RedditChannel().check()
         assert status == "off"
-        # 诚实口径：明说没有零配置路径，推荐 OpenCLI + rdt git 源
-        assert "零配置" in msg
+        # Be honest: say there is no zero-config path, recommend OpenCLI + the rdt git source
+        assert "no zero-config path" in msg
         assert "opencli" in msg
         assert "git+https://github.com/public-clis/rdt-cli.git" in msg
 
     def test_opencli_ready_wins(self, monkeypatch):
-        self._isolate(monkeypatch, opencli=("ok", "OpenCLI 可用（复用浏览器登录态）"))
+        self._isolate(monkeypatch, opencli=("ok", "OpenCLI available (reuses browser login)"))
         monkeypatch.setattr(shutil, "which", lambda _: None)
         from agent_reach.channels.reddit import RedditChannel
         ch = RedditChannel()
@@ -851,7 +851,7 @@ class TestRedditChannel:
         ch = RedditChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert "未实时验证" in msg
+        assert "not verified live" in msg
         assert ch.active_backend is None
 
     def test_reports_warn_when_cookie_is_missing(self, monkeypatch):
@@ -875,13 +875,13 @@ class TestRedditChannel:
 
 
 class TestXiaoHongShuChannel:
-    """多后端选择逻辑：OpenCLI > xiaohongshu-mcp > xhs-cli，第一个完整可用者获胜。"""
+    """Multi-backend selection: OpenCLI > xiaohongshu-mcp > xhs-cli; the first fully usable wins."""
 
     @staticmethod
     def _isolate(monkeypatch, opencli=None, mcp_reachable=False):
-        """隔离 OpenCLI / mcp 候选，让测试聚焦目标后端。
+        """Isolate the OpenCLI / mcp candidates so the test focuses on the target backend.
 
-        opencli: None 表示未安装；否则传入 (status, message) 二元组。
+        opencli: None means not installed; otherwise pass a (status, message) tuple.
         """
         import agent_reach.channels.xiaohongshu as xhs_mod
 
@@ -905,8 +905,8 @@ class TestXiaoHongShuChannel:
         status, message = XiaoHongShuChannel()._check_opencli()
 
         assert status == "warn"
-        assert "桥接已连接" in message
-        assert "登录态和实际命令未实时验证" in message
+        assert "bridge connected" in message
+        assert "login and real commands were not verified live" in message
 
     def test_saved_cli_cookie_is_unverified_not_active(
         self, monkeypatch, isolated_home
@@ -932,7 +932,7 @@ class TestXiaoHongShuChannel:
         ch = XiaoHongShuChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert "未实时验证" in msg
+        assert "not verified live" in msg
         assert ch.active_backend is None
 
     def test_saved_cli_cookie_refuses_ancestor_symlink(
@@ -954,7 +954,7 @@ class TestXiaoHongShuChannel:
         status, message = XiaoHongShuChannel()._check_xhs_cli()
 
         assert status == "warn"
-        assert "符号链接" in message
+        assert "symlink" in message
 
     def test_reports_warn_when_not_authenticated(self, monkeypatch):
         self._isolate(monkeypatch)
@@ -978,14 +978,14 @@ class TestXiaoHongShuChannel:
         ch = XiaoHongShuChannel()
         status, msg = ch.check()
         assert status == "off"
-        # off 指引推荐当代后端，而非停更的 xhs-cli
+        # The off guidance recommends current backends, not the unmaintained xhs-cli
         assert "opencli" in msg
         assert "xiaohongshu-mcp" in msg
         assert ch.active_backend is None
 
     def test_opencli_ready_wins_over_cli(self, monkeypatch):
-        """OpenCLI 完整可用时按序获胜，即使 xhs-cli 也完整可用。"""
-        self._isolate(monkeypatch, opencli=("ok", "OpenCLI 可用（复用浏览器登录态）"))
+        """A fully usable OpenCLI wins by order, even when xhs-cli is fully usable too."""
+        self._isolate(monkeypatch, opencli=("ok", "OpenCLI available (reuses browser login)"))
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/xhs")
 
         def fake_run(cmd, **kwargs):
@@ -1001,7 +1001,7 @@ class TestXiaoHongShuChannel:
     def test_opencli_warn_remains_first_when_cli_is_only_unverified(
         self, monkeypatch
     ):
-        self._isolate(monkeypatch, opencli=("warn", "扩展未连接"))
+        self._isolate(monkeypatch, opencli=("warn", "extension not connected"))
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/xhs")
 
         def fake_run(cmd, **kwargs):
@@ -1012,13 +1012,13 @@ class TestXiaoHongShuChannel:
         ch = XiaoHongShuChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert msg == "扩展未连接"
+        assert msg == "extension not connected"
         assert ch.active_backend is None
 
     def test_mcp_service_wins_when_opencli_absent(
         self, monkeypatch, tmp_path
     ):
-        """服务器场景：OpenCLI 未装、mcp 服务可达且 mcporter 已接入 → mcp 获胜。"""
+        """Server case: OpenCLI missing, mcp service reachable and wired into mcporter → mcp wins."""
         self._isolate(monkeypatch, mcp_reachable=True)
         monkeypatch.chdir(tmp_path)
         config_path = tmp_path / "config" / "mcporter.json"
@@ -1049,7 +1049,7 @@ class TestXiaoHongShuChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert ch.active_backend is None
-        assert "未验证登录态" in msg
+        assert "has not verified the login" in msg
 
     def test_mcp_reachable_but_mcporter_unconfigured_warns(
         self, monkeypatch, tmp_path
@@ -1127,7 +1127,7 @@ class TestXiaoHongShuChannel:
         status, message = ch.check()
 
         assert status == "warn"
-        assert "未接入" in message
+        assert "not connected to mcporter" in message
         assert ch.active_backend is None
 
     def test_all_xhs_auth_hints_exclude_qr_and_automatic_cookie_read(
@@ -1149,13 +1149,15 @@ class TestXiaoHongShuChannel:
         assert status == "warn"
         assert "Cookie-Editor" in message
         assert "configure xhs-cookies" in message
-        assert "扫码" not in message
-        assert "自动从浏览器" not in message
+        # Never suggest QR-code login or automatic browser cookie extraction.
+        assert "QR" not in message
+        assert "scan" not in message.lower()
+        assert "auto-extract" not in message
 
     def test_unverified_cli_override_cannot_hide_working_opencli(
         self, monkeypatch
     ):
-        self._isolate(monkeypatch, opencli=("ok", "OpenCLI 可用"))
+        self._isolate(monkeypatch, opencli=("ok", "OpenCLI available"))
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/xhs")
 
         def fake_run(cmd, **kwargs):
@@ -1174,7 +1176,7 @@ class TestXiaoHongShuChannel:
 
 
 class TestBilibiliChannel:
-    """多后端：bili-cli > OpenCLI > 搜索 API。yt-dlp 已退出 B站（412 实锤）。"""
+    """Multi-backend: bili-cli > OpenCLI > search API. yt-dlp no longer works on Bilibili (confirmed 412)."""
 
     @staticmethod
     def _isolate(monkeypatch, opencli=None, api_ok=False):
@@ -1199,7 +1201,7 @@ class TestBilibiliChannel:
         ch = BilibiliChannel()
         status, msg = ch.check()
         assert status == "ok"
-        assert "bili-cli 可用" in msg
+        assert "bili-cli available" in msg
         assert ch.active_backend == "bili-cli"
 
     def test_opencli_bridge_ready_is_unverified(self, monkeypatch):
@@ -1215,11 +1217,11 @@ class TestBilibiliChannel:
         status, message = BilibiliChannel()._check_opencli()
 
         assert status == "warn"
-        assert "桥接已连接" in message
-        assert "实际命令未实时验证" in message
+        assert "bridge connected" in message
+        assert "real commands were not verified live" in message
 
     def test_bili_broken_falls_back_to_api_with_hint_kept(self, monkeypatch):
-        """bili 断链 → API 兜底获胜，但重装处方必须保留在消息里。"""
+        """bili broken → the API fallback wins, but the reinstall fix must stay in the message."""
         self._isolate(monkeypatch, api_ok=True)
         monkeypatch.setattr(
             shutil, "which",
@@ -1233,9 +1235,9 @@ class TestBilibiliChannel:
         from agent_reach.channels.bilibili import BilibiliChannel
         ch = BilibiliChannel()
         status, msg = ch.check()
-        assert status == "ok"  # 搜索 API 兜底
-        assert ch.active_backend == "B站搜索 API"
-        assert "备选后端异常" in msg
+        assert status == "ok"  # search API fallback
+        assert ch.active_backend == "Bilibili search API"
+        assert "Fallback backend error" in msg
         assert "pipx reinstall bilibili-cli" in msg
 
     def test_bili_broken_and_no_fallback_reports_error(self, monkeypatch):
@@ -1259,7 +1261,7 @@ class TestBilibiliChannel:
     def test_unverified_opencli_falls_back_to_verified_api(self, monkeypatch):
         self._isolate(
             monkeypatch,
-            opencli=("warn", "OpenCLI 桥接已连接但未验证"),
+            opencli=("warn", "OpenCLI bridge connected but unverified"),
             api_ok=True,
         )
         monkeypatch.setattr(shutil, "which", lambda _: None)
@@ -1267,12 +1269,12 @@ class TestBilibiliChannel:
         ch = BilibiliChannel()
         status, msg = ch.check()
         assert status == "ok"
-        assert ch.active_backend == "B站搜索 API"
+        assert ch.active_backend == "Bilibili search API"
 
     def test_unverified_opencli_alone_has_no_active_backend(self, monkeypatch):
         self._isolate(
             monkeypatch,
-            opencli=("warn", "OpenCLI 桥接已连接但未验证"),
+            opencli=("warn", "OpenCLI bridge connected but unverified"),
             api_ok=False,
         )
         monkeypatch.setattr(shutil, "which", lambda _: None)
@@ -1290,7 +1292,7 @@ class TestBilibiliChannel:
         ch = BilibiliChannel()
         status, msg = ch.check()
         assert status == "ok"
-        assert ch.active_backend == "B站搜索 API"
+        assert ch.active_backend == "Bilibili search API"
         assert "bilibili-cli" in msg
 
     def test_off_when_everything_unreachable(self, monkeypatch):
@@ -1305,7 +1307,7 @@ class TestBilibiliChannel:
 
 class TestYouTubeChannel:
     def test_reports_error_with_reinstall_hint_when_broken(self, monkeypatch):
-        """yt-dlp which 命中但 exec 抛 FileNotFoundError → error + 重装处方。"""
+        """yt-dlp found by which but exec raises FileNotFoundError → error + reinstall fix."""
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/yt-dlp")
 
         def fake_run(cmd, **kwargs):
@@ -1316,14 +1318,14 @@ class TestYouTubeChannel:
         ch = YouTubeChannel()
         status, msg = ch.check()
         assert status == "error"
-        assert "无法执行" in msg
+        assert "cannot run" in msg
         assert "uv tool install --force yt-dlp" in msg
         assert ch.active_backend is None
 
 
 class TestGitHubChannel:
     def test_reports_error_with_reinstall_hint_when_broken(self, monkeypatch):
-        """gh --version 断链时给出二进制重装处方。"""
+        """When gh --version is broken, give a binary reinstall fix."""
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/gh")
 
         def fake_run(cmd, **kwargs):
@@ -1335,7 +1337,7 @@ class TestGitHubChannel:
         ch = GitHubChannel()
         status, msg = ch.check()
         assert status == "error"
-        assert "无法执行" in msg
+        assert "cannot run" in msg
         assert "brew reinstall gh" in msg
         assert ch.active_backend is None
 
@@ -1357,7 +1359,7 @@ class TestGitHubChannel:
         ch = GitHubChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert "显式认证配置" in msg
+        assert "explicit auth config" in msg
         assert "configured-secret" not in msg
         assert ch.active_backend is None
 
@@ -1409,7 +1411,7 @@ class TestGitHubChannel:
         status, message = GitHubChannel().check()
 
         assert status == "warn"
-        assert "显式认证配置" in message
+        assert "explicit auth config" in message
         assert "alice" not in message
         assert "super-secret-token" not in message
 
@@ -1444,7 +1446,7 @@ class TestGitHubChannel:
         status, message = channel.check()
 
         assert status == "warn"
-        assert "无法安全确认" in message
+        assert "cannot be confirmed safely" in message
         assert "do-not-read" not in message
         assert channel.active_backend is None
 
@@ -1503,7 +1505,7 @@ class TestLinkedInChannel:
         status, message = LinkedInChannel().check()
 
         assert status == "warn"
-        assert "uvx 未安装" in message
+        assert "uvx is not installed" in message
         assert "docs.astral.sh/uv/getting-started/installation" in message
 
     def test_mcporter_is_never_executed(
@@ -1562,7 +1564,7 @@ class TestLinkedInChannel:
         ch = LinkedInChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert "未启动" in msg
+        assert "did not start" in msg
         assert ch.active_backend is None
 
     def test_config_metadata_containing_linkedin_is_not_a_backend(
@@ -1654,7 +1656,7 @@ class TestExaSearchChannel:
         ch = ExaSearchChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert "未启动" in msg
+        assert "did not start" in msg
         assert ch.active_backend is None
 
     def test_config_metadata_containing_exa_is_not_a_backend(
@@ -1710,7 +1712,7 @@ class TestExaSearchChannel:
 
 class TestXiaoyuzhouChannel:
     def test_reports_error_with_reinstall_hint_when_ffmpeg_broken(self, monkeypatch):
-        """ffmpeg which 命中但 exec 失败（pip 假 ffmpeg 断链）→ error + 重装处方。"""
+        """ffmpeg found by which but exec fails (broken fake pip ffmpeg) → error + reinstall fix."""
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/ffmpeg")
 
         def fake_run(cmd, **kwargs):
@@ -1721,7 +1723,7 @@ class TestXiaoyuzhouChannel:
         ch = XiaoyuzhouChannel()
         status, msg = ch.check()
         assert status == "error"
-        assert "无法执行" in msg
+        assert "cannot run" in msg
         assert "brew install ffmpeg" in msg
         assert ch.active_backend is None
 
@@ -1732,7 +1734,7 @@ class TestXiaoyuzhouChannel:
             return subprocess.CompletedProcess(cmd, 0, "ffmpeg version 7.0", "")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        monkeypatch.setattr("os.path.isfile", lambda p: True)  # transcribe.sh 已安装
+        monkeypatch.setattr("os.path.isfile", lambda p: True)  # transcribe.sh is installed
         monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
         from agent_reach.channels.xiaoyuzhou import XiaoyuzhouChannel
         ch = XiaoyuzhouChannel()
