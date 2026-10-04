@@ -12,11 +12,29 @@ yt-dlp --dump-json "URL"
 
 ### Download subtitles
 
-```bash
-# Download subtitles (without downloading the video)
-yt-dlp --write-sub --write-auto-sub --sub-lang "zh-Hans,zh,en" --skip-download -o "/tmp/%(id)s" "URL"
+YouTube lists the original speech-recognition track as `<lang>-orig` and also offers
+automatic tracks in many other languages. **Every automatic track whose language differs
+from the video's spoken language is a machine translation**, not what the speaker said.
+Pick the track in this order and tell the user which one you used:
 
-# Then read the .vtt file
+1. Manual subtitles in the wanted language (`--write-sub --sub-lang <lang>`).
+2. The original speech recognition: `--write-auto-sub --sub-lang "<lang>-orig"`, or
+   `--sub-lang ".*-orig"` when the spoken language is unknown.
+3. A plain automatic `<lang>` track **only** if the video's own `language` is `<lang>`.
+4. Anything else is a translation: use it only if the user accepts that, and label it as such.
+
+```bash
+# See which tracks exist, and the video's spoken language
+yt-dlp --list-subs --skip-download "URL"
+yt-dlp --print language "URL"
+
+# 1. Manual subtitles in the wanted language (without downloading the video)
+yt-dlp --write-sub --sub-lang "zh-Hans,zh,en" --skip-download -o "/tmp/%(id)s" "URL"
+
+# 2. Otherwise the original-language automatic track
+yt-dlp --write-auto-sub --sub-lang ".*-orig" --skip-download -o "/tmp/%(id)s" "URL"
+
+# Then read the .vtt file (the language code is in the file name, e.g. VIDEO_ID.ar-orig.vtt)
 cat /tmp/VIDEO_ID.*.vtt
 ```
 
@@ -44,7 +62,7 @@ yt-dlp --dump-json "ytsearch5:query"
 `doctor` only confirms that yt-dlp itself and the JS runtime can execute; it does not request a specific video. So
 `active_backend: yt-dlp` does not mean the target video's subtitles have passed a live check.
 
-1. Start with the `yt-dlp --write-sub --write-auto-sub` command above.
+1. Start with the subtitle commands above (manual subtitles, then the `-orig` automatic track).
 2. If you hit a bot check, the subtitle response is empty, or no subtitle file is produced, and OpenCLI is connected:
    `opencli youtube transcript "URL" -f yaml`.
 3. If OpenCLI returns `Caption URL returned empty response`, retry at most 3 times; this is an occasional failure of the

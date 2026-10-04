@@ -49,7 +49,7 @@ None. With the user's explicit authorization, rdt-cli is installed through
 If you have already configured Exa (via mcporter), you can also search Reddit content through Exa:
 
 ```bash
-mcporter call exa.web_search_exa query="site:reddit.com python best practices" numResults=5
+mcporter call exa.web_search_exa "query=site:reddit.com python best practices" numResults=5
 ```
 
 rdt-cli is the currently recommended option and works without extra configuration.

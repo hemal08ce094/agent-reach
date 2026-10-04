@@ -6,9 +6,11 @@ The Exa AI search engine.
 
 A high-quality AI search engine, well suited to technical docs, official examples and related web pages.
 
+> mcporter keeps quotes that reach it as part of the value, so write `key=value` and quote the whole token when the value has spaces (`"keywords=AI engineer"`), never `key="value"`; `--args '{"key": "value"}'` also works.
+
 ```bash
-mcporter call exa.web_search_exa query="query" numResults=5
-mcporter call exa.web_search_exa query="library API code example" numResults=5
+mcporter call exa.web_search_exa "query=your search terms" numResults=5
+mcporter call exa.web_search_exa "query=library API code example" numResults=5
 ```
 
 ### Use cases

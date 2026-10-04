@@ -4,6 +4,110 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## 1.6.0 — English fork
+
+### Translation
+
+- Code, CLI output, doctor messages, tests, skill and guides translated to English.
+  `SKILL.md` is now English and is installed for every locale; the `LANG`/`LC_*`
+  locale switch is gone (`LANG=C.UTF-8` / unset no longer changes the skill).
+  `SKILL_en.md` still ships, identical, for tools that reference it by name.
+
+### Behaviour changes
+
+- **Config errors exit 2 with one line instead of a traceback.** Invalid YAML,
+  non-UTF-8 bytes, a non-mapping top level, unreadable files and symlinked
+  config paths are reported as `agent-reach: error: …` plus a remedy. YAML errors
+  report only line/column, never file content (the file holds secrets).
+- **Read-only commands follow symlinks.** `Config(read_only=True)` (doctor,
+  watch, MCP) accepts a symlinked `$HOME`, macOS `/var` → `/private/var` and
+  dotfile-managed directories; regular-file and size checks still apply. Writes
+  keep the strict no-follow rule. `read_small_text_no_follow()` gains
+  `follow_symlinks=` for read-only callers.
+- **Non-mapping `config.yaml` (`[]`, `false`, `0`, …) is an error**, no longer
+  silently treated as `{}` and overwritten by the next save.
+- **Doctor runs channel checks concurrently** in daemon threads under one
+  shared 30 s budget (`AGENT_REACH_DOCTOR_TIMEOUT` overrides it). Checks still
+  running when it expires are reported with the new status `"timeout"`; result
+  order still follows the channel registry. A typical run takes about half the
+  time it did.
+- **`active_backend` contract:** it names the backend that would be used
+  whenever a channel reports `ok` *or* `warn`, and is always `null` for `off`,
+  `error` and `timeout` (doctor enforces the latter). `Channel.pick_finding()`
+  implements the ok-then-warn selection for multi-backend channels.
+- **Backend overrides (`<channel>_backend` / `<CHANNEL>_BACKEND`) are
+  case-insensitive and accept ASCII slugs:** `opencli`, `bird`, `xhs-cli`,
+  `bilibili-api` / `search-api` / `api` (→ "Bilibili search API"). A value that
+  matches nothing logs a warning instead of being ignored silently.
+- **MCP server:** `get_status` returns plain text (no Rich markup) by default
+  and the `doctor --json` payload with `{"format": "json"}`; the doctor runs in
+  `asyncio.to_thread` so the event loop stays responsive. New `mcp` extra
+  (`mcp[cli]>=1.0,<2`; the `all` extra uses the same pin), and the install hint
+  now names an extra that exists.
+- **`uninstall` exits 1 when anything could not be removed**, and removes the
+  `$OPENCLAW_HOME` skill too (it reuses the same skill-root list as install).
+  `skill --uninstall` also exits 1 on failure.
+- **`configure youtube-cookies` validates its value**
+  (`BROWSER[+KEYRING][:PROFILE][::CONTAINER]`, normalised, exit 2 on junk); the
+  saved `youtube_cookies_from` key is what `transcribe` reads.
+
+### Fixes
+
+- `install --env=server|local` is honoured by the Reddit and Xiaohongshu
+  installers instead of re-running auto-detection (upstream #701 / PR #705).
+- Skill refresh is atomic: the packaged skill is read into memory, written to a
+  sibling staging directory and swapped in with renames, so a broken package
+  or a failed write keeps the previous skill (a symlinked skill dir is replaced
+  without touching its target).
+- `setup` and `uninstall` call mcporter through its resolved path (Windows
+  `.cmd` shims cannot be started by bare name; upstream #590).
+- Probes run in their own session/process group; a timeout kills the whole
+  tree (`killpg` on POSIX, `taskkill /T /F` on Windows) and drains pipes with a
+  bounded wait, so npm shims can no longer hang doctor (upstream #732, PR #751).
+- OpenCLI multi-profile daemons (`profileRequired: true`) are recognised as
+  connected when any profile is (upstream #740 / PR #739). `opencli_status()` is
+  probed once per doctor run instead of six times.
+- `check-update`/`watch` cap a `Retry-After` sleep at 30 s and treat non-JSON
+  (captive portal) responses as an error instead of crashing.
+- `configure xhs-cookies` picks the exact `xiaohongshu-mcp` container (or the
+  only match) and refuses ambiguous `docker ps` results.
+- Redirected stdin is decoded as UTF-8 on every platform (`format xhs`,
+  `configure --stdin` on zh-CN Windows; upstream PR #754).
+- `make_private_dir` skips the chmod when the directory is already 0700 and
+  downgrades a `PermissionError` to a warning (chmod-denying sandboxes;
+  upstream #684).
+- `_atomic_write_yaml` no longer leaks the temp file descriptor when
+  `fchmod`/`fdopen` fails.
+- The install tools directory, skill roots and OpenCLI extension scan resolve
+  `~` through `home_dir()` (honours `$HOME` on Windows) like config and uninstall.
+
+### Channel fixes
+
+- YouTube doctor now inspects the config file yt-dlp actually loads (first existing of `yt-dlp.conf`, `yt-dlp/config`, `yt-dlp/config.txt` under XDG/APPDATA/home, in yt-dlp's order), parses it comment-aware like yt-dlp (`# --js-runtimes node` no longer counts, #715), follows dotfile-managed symlinks, and points the fix command at that file.
+- YouTube doctor wording no longer claims videos/subtitles work; it says the toolchain is ready and access was not verified live (#766, #729).
+- `agent-reach transcribe` passes the saved `youtube_cookies_from` value to yt-dlp as `--cookies-from-browser` for youtube.com/youtu.be URLs only, after validating the `BROWSER[+KEYRING][:PROFILE][::CONTAINER]` grammar (#702, from #723).
+- Transcription runs ffmpeg/ffprobe with absolute input/output paths (files named `-x.wav` or `Podcast: x.wav` work), `-nostdin`, and `stdin=DEVNULL`, so it never eats the caller's stdin (#770, #769).
+- Transcription's SSRF check now uses the shared `normalize_public_http_url` (blocks `.internal`/`.lan`/`.local`, non-global addresses, IDNA lookalikes).
+- `normalize_public_http_url` validates the IDNA-normalised host (`http://１２７.０.０.１/` is rejected) and returns the ASCII host form.
+- `host_matches` rejects backslashes, whitespace and control characters (`https://evil.example\.x.com/` no longer routes to Twitter) and accepts scheme-less URLs such as `x.com/user`.
+- Reddit and XiaoHongShu checks report undecodable cookie files as "cannot be read safely" instead of crashing (#748), and treat `saved_at <= 0` as unknown rather than stale. Reddit's own login template no longer shows as expired.
+- XiaoHongShu: the xiaohongshu-mcp probe closes its HTTP responses, and `format_xhs_result` unwraps the MCP `feeds`/`data` envelopes and camelCase fields instead of returning `{}` (#744).
+- Xueqiu: the anonymous warm-up uses `/hq` (which sets `xq_a_token`) and closes its response. A newly configured or changed `xueqiu_cookie` is picked up in long-lived processes. A saved cookie that Xueqiu rejects (400016/401/403) falls back to an anonymous session instead of blocking it, and doctor says so (#664). The warm-up is skipped when a token is already present.
+- Twitter: an empty `TWITTER_AUTH_TOKEN=""` / `TWITTER_CT0=""` no longer hides saved credentials.
+- Web: `read()` percent-encodes non-ASCII paths and queries, IDNA-encodes hosts, and decodes with the declared charset using replacement. `check()` is a 3 s HEAD probe of r.jina.ai that warns when it can't be reached (#685).
+- V2EX helpers handle error objects (`{"status":"error"}`), `null` items and non-list replies without crashing, and show the API message.
+- RSS `can_handle` matches feed path segments and suffixes on http(s) URLs only (no more `wiki/Anatomy`, `/issues/feedback`, `sitemap.xml`, `file://`).
+- Xiaoyuzhou: `transcribe.sh` passes the Groq key through a 0600 curl config file (`-K`) instead of argv, sends the Chinese Whisper prompt with `-F "prompt=<file"` (#720), skips unrunnable Microsoft Store `python3` stubs (#717), and runs ffmpeg with `-nostdin`. Doctor also requires ffprobe, curl and perl (#753) and finds the script via `home_dir()`.
+- mcporter config inspection accepts JSONC (comments, trailing commas) like mcporter (#762). It skips malformed home/project layers (with a warning in the Exa/LinkedIn/XHS rows) instead of failing every channel; an explicit `MCPORTER_CONFIG` still fails closed.
+- Boss: the CDP cookie probe only connects to a loopback `ws://` host, reassembles fragmented WebSocket messages up to FIN (with a size cap), and matches the `wt2` domain exactly. The Windows Chrome command quotes profile paths that contain spaces (#771).
+- Bilibili doctor stops probing once a backend is ok, so the 2-4 s search-API call is skipped when bili-cli works.
+- `active_backend` is now set for warn-level backends too (twitter, reddit, xhs, bilibili, github, OpenCLI sites, Exa, LinkedIn). Read-only doctor reads follow symlinks.
+- Docs: the YouTube subtitle recipe prefers manual subs, then `<lang>-orig`, and warns that other automatic tracks are machine translations (#742). mcporter examples use `key=value` / `"key=multi word"` instead of `key="value"` (#679). SKILL.md and SKILL_en.md stay identical.
+- Installer now edits the yt-dlp config file yt-dlp actually loads.
+- Remaining doctor tests run fully offline.
+
+---
+
 ## [Unreleased]
 
 ### 🐛 Bug Fixes

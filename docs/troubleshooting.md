@@ -90,7 +90,7 @@ proxychains twitter search "test" -n 1
 When twitter-cli is unavailable, you can search Twitter content directly with Exa:
 
 ```bash
-mcporter call exa.web_search_exa query="site:x.com search terms" numResults=5
+mcporter call exa.web_search_exa "query=site:x.com search terms" numResults=5
 ```
 
 ### Option 4: Check authentication

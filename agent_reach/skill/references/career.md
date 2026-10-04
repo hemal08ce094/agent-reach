@@ -4,18 +4,20 @@ LinkedIn, Boss Zhipin.
 
 ## LinkedIn
 
+> mcporter keeps quotes that reach it as part of the value, so write `key=value` and quote the whole token when the value has spaces (`"keywords=AI engineer"`), never `key="value"`; `--args '{"key": "value"}'` also works.
+
 ```bash
 # Get a person's profile
-mcporter call linkedin.get_person_profile linkedin_username="username" sections="experience,education"
+mcporter call linkedin.get_person_profile linkedin_username=username sections=experience,education
 
 # Search people
-mcporter call linkedin.search_people keywords="AI engineer" location="Shanghai"
+mcporter call linkedin.search_people "keywords=AI engineer" location=Shanghai
 
 # Get a company profile
-mcporter call linkedin.get_company_profile company_name="openai" sections="posts,jobs"
+mcporter call linkedin.get_company_profile company_name=openai sections=posts,jobs
 
 # Search jobs
-mcporter call linkedin.search_jobs keywords="software engineer" location="Remote" max_pages=2
+mcporter call linkedin.search_jobs "keywords=software engineer" location=Remote max_pages=2
 ```
 
 > **Login required**: before first use, run `uvx mcp-server-linkedin@latest --login` to save a valid login session.
@@ -135,7 +137,7 @@ If `agent-reach doctor` reports boss as `off` or `warn` before a search, follow 
 
    Windows PowerShell:
    ```powershell
-   Start-Process chrome.exe -ArgumentList '--remote-debugging-address=127.0.0.1','--remote-debugging-port=9222',"--user-data-dir=$env:USERPROFILE\.boss-chrome-profile",'https://www.zhipin.com/web/geek/job'
+   Start-Process chrome.exe -ArgumentList '--remote-debugging-address=127.0.0.1','--remote-debugging-port=9222',"--user-data-dir=`"$env:USERPROFILE\.boss-chrome-profile`"",'https://www.zhipin.com/web/geek/job'
    ```
 
    Bind to the loopback address only. Any process that can reach 9222 has full control of that Chrome; do not listen on a public interface.

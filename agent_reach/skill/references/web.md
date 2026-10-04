@@ -16,15 +16,17 @@ curl -s "https://r.jina.ai/https://example.com/article"
 
 ## Web Reader (MCP)
 
+> mcporter keeps quotes that reach it as part of the value, so write `key=value` and quote the whole token when the value has spaces (`"keywords=AI engineer"`), never `key="value"`; `--args '{"key": "value"}'` also works.
+
 ```bash
 # Read page content (Markdown format)
-mcporter call web-reader.webReader url="https://example.com"
+mcporter call web-reader.webReader url=https://example.com
 
 # Keep images
-mcporter call web-reader.webReader url="https://example.com" retain_images=true
+mcporter call web-reader.webReader url=https://example.com retain_images=true
 
 # Plain-text format
-mcporter call web-reader.webReader url="https://example.com" return_format="text"
+mcporter call web-reader.webReader url=https://example.com return_format=text
 ```
 
 **When to use**: when you need finer control over the output format.

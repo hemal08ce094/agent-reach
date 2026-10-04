@@ -33,6 +33,8 @@ opencli xiaohongshu user USER_ID -f yaml
 
 ### Backend B: xiaohongshu-mcp (server scenario)
 
+> mcporter keeps quotes that reach it as part of the value, so write `key=value` and quote the whole token when the value has spaces (`"keywords=AI engineer"`), never `key="value"`; `--args '{"key": "value"}'` also works.
+
 ```bash
 # Before authenticating, have the user export cookies manually with Cookie-Editor, then import them explicitly
 agent-reach configure xhs-cookies
@@ -41,10 +43,10 @@ agent-reach configure xhs-cookies
 mcporter call xiaohongshu.check_login_status --timeout 120000
 
 # Search
-mcporter call xiaohongshu.search_feeds keyword="query" --timeout 120000
+mcporter call xiaohongshu.search_feeds keyword=query --timeout 120000
 
 # Note details + comments (take feed_id and xsec_token from the search results)
-mcporter call xiaohongshu.get_feed_detail feed_id="..." xsec_token="..." --timeout 120000
+mcporter call xiaohongshu.get_feed_detail feed_id=... xsec_token=... --timeout 120000
 ```
 
 > The first call automatically downloads a headless browser of about 150MB, so always pass `--timeout 120000`.

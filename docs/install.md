@@ -339,7 +339,7 @@ When the user says "set up Boss Zhipin for me", the Agent does everything that c
    ```
    Windows PowerShell:
    ```powershell
-   Start-Process chrome.exe -ArgumentList '--remote-debugging-address=127.0.0.1','--remote-debugging-port=9222',"--user-data-dir=$env:USERPROFILE\.boss-chrome-profile",'https://www.zhipin.com/web/geek/job'
+   Start-Process chrome.exe -ArgumentList '--remote-debugging-address=127.0.0.1','--remote-debugging-port=9222',"--user-data-dir=`"$env:USERPROFILE\.boss-chrome-profile`"",'https://www.zhipin.com/web/geek/job'
    ```
 4. Pause and have the **user visually confirm** the login state in the window (an avatar appears at the top right); if not logged in, have the **user log in manually**, scan the QR code, or solve the slider. The Agent never asks for account passwords, never logs in on the user's behalf, and must not use `boss status`
    as a substitute for this step; it only validates the local `session.enc` and does not mean this Chrome is logged in.
@@ -414,10 +414,10 @@ After installation, use upstream tools directly. See SKILL.md for the full comma
 | Instagram | `opencli` | `opencli instagram user nasa -f yaml` |
 | GitHub | `gh` | `gh search repos "query"` |
 | Web | `curl` + Jina | `curl -s "https://r.jina.ai/URL"` |
-| Exa Search | `mcporter` | `mcporter call exa.web_search_exa query="..." numResults=5` |
+| Exa Search | `mcporter` | `mcporter call exa.web_search_exa query=... numResults=5` |
 | Xiaohongshu | `opencli` (server: `mcporter`) | `opencli xiaohongshu search "query" -f yaml` |
 | Xiaoyuzhou Podcast | `transcribe.sh` | `bash ~/.agent-reach/tools/xiaoyuzhou/transcribe.sh <URL>` |
-| LinkedIn | `mcporter` | `mcporter call linkedin.get_person_profile linkedin_username="..."` |
+| LinkedIn | `mcporter` | `mcporter call linkedin.get_person_profile linkedin_username=...` |
 | Boss Zhipin | `boss` / Python public API | `agent-reach doctor` (browser wt2 probe; `boss status` only reflects the local session.enc); for search and JD see `references/career.md` |
 | RSS | `feedparser` | `python3 -c "import feedparser; ..."` |
 

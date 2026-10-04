@@ -56,8 +56,9 @@ metadata:
 ## Zero-config quick commands
 
 ```bash
-# Exa web search
-mcporter call exa.web_search_exa query="query" numResults=5
+# Exa web search (mcporter keeps inner quotes: write key=value, and quote the
+# whole token when the value has spaces; never key="value")
+mcporter call exa.web_search_exa "query=your search terms" numResults=5
 
 # Read any web page
 curl -s "https://r.jina.ai/URL"
@@ -65,8 +66,10 @@ curl -s "https://r.jina.ai/URL"
 # GitHub search
 gh search repos "query" --sort stars --limit 10
 
-# YouTube subtitles (note: never use yt-dlp for Bilibili; retry chain in video.md)
-yt-dlp --write-sub --write-auto-sub --skip-download -o "/tmp/%(id)s" "URL"
+# YouTube subtitles: manual subs win; *-orig is the original-language auto track.
+# Any other auto track (e.g. .en for a non-English video) is a machine translation:
+# say so if you use it. Track order + retry chain in video.md; never use yt-dlp for Bilibili
+yt-dlp --write-sub --write-auto-sub --sub-lang "en,zh-Hans,zh,.*-orig" --skip-download -o "/tmp/%(id)s" "URL"
 
 # V2EX hot topics
 curl -s "https://www.v2ex.com/api/topics/hot.json" -H "User-Agent: agent-reach/1.0"
