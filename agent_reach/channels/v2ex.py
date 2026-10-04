@@ -137,6 +137,29 @@ def _get_json(url: str) -> Any:
         return _get_json_with_curl(url)
 
 
+def _api_error_message(data: Any) -> str:
+    """Extract V2EX's ``{"status": "error", "message": ...}`` text, if any."""
+    if isinstance(data, dict):
+        message = data.get("message") or data.get("error")
+        if message:
+            return str(message)
+        if data.get("status") == "error":
+            return "unknown error"
+    return ""
+
+
+def _expect_list(data: Any) -> list:
+    """Return the dict items of a list payload, raising on API error objects."""
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    message = _api_error_message(data)
+    if message:
+        raise RuntimeError(f"V2EX API error: {message}")
+    raise RuntimeError(
+        f"Unexpected V2EX API response (expected a list, got {type(data).__name__})"
+    )
+
+
 class V2EXChannel(Channel):
     name = "v2ex"
     description = "V2EX nodes, topics and replies"
@@ -158,8 +181,10 @@ class V2EXChannel(Channel):
 
     def check(self, config=None):
         try:
-            _get_json(
-                "https://www.v2ex.com/api/topics/show.json?node_name=python&page=1"
+            _expect_list(
+                _get_json(
+                    "https://www.v2ex.com/api/topics/show.json?node_name=python&page=1"
+                )
             )
             self.active_backend = self.backends[0]
             return "ok", "Public API available (hot topics, node browsing, topic details, user info)"
@@ -180,7 +205,7 @@ class V2EXChannel(Channel):
         Returns a list of dicts with keys:
           title, url, replies, node_name, node_title, content
         """
-        data = _get_json("https://www.v2ex.com/api/topics/hot.json")
+        data = _expect_list(_get_json("https://www.v2ex.com/api/topics/hot.json"))
         results = []
         for item in data[:limit]:
             node = item.get("node") or {}
@@ -214,7 +239,7 @@ class V2EXChannel(Channel):
             node_name=node_name,
             page=1,
         )
-        data = _get_json(url)
+        data = _expect_list(_get_json(url))
         results = []
         for item in data[:limit]:
             node = item.get("node") or {}
@@ -250,7 +275,12 @@ class V2EXChannel(Channel):
         if isinstance(topic_data, list):
             topic = topic_data[0] if topic_data else {}
         else:
+            message = _api_error_message(topic_data)
+            if message:
+                raise RuntimeError(f"V2EX API error: {message}")
             topic = topic_data
+        if not isinstance(topic, dict):
+            topic = {}
 
         node = topic.get("node") or {}
         member = topic.get("member") or {}
@@ -273,7 +303,8 @@ class V2EXChannel(Channel):
                 "content": r.get("content", ""),
                 "created": r.get("created", 0),
             }
-            for r in (replies_raw or [])
+            for r in (replies_raw if isinstance(replies_raw, list) else [])
+            if isinstance(r, dict)
         ]
 
         return {
@@ -305,6 +336,12 @@ class V2EXChannel(Channel):
         data = _get_json(
             _v2ex_url("/api/members/show.json", username=username)
         )
+        if isinstance(data, dict) and data.get("status") == "error":
+            raise RuntimeError(f"V2EX API error: {_api_error_message(data)}")
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Unexpected V2EX API response (expected an object, got {type(data).__name__})"
+            )
         return {
             "id": data.get("id", 0),
             "username": data.get("username", username),

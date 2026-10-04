@@ -52,11 +52,10 @@ class RedditChannel(Channel):
                 continue
             findings.append((backend, *result))
 
-        for wanted in ("ok", "warn"):
-            for backend, status, message in findings:
-                if status == wanted:
-                    self.active_backend = backend if status == "ok" else None
-                    return status, message
+        # First ok wins, else first warn; active_backend is set for both (B9).
+        picked = self.pick_finding(findings)
+        if picked is not None:
+            return picked
 
         if findings:
             return "error", "\n".join(m for _, _, m in findings)
@@ -98,13 +97,14 @@ class RedditChannel(Channel):
         try:
             payload = read_small_text_no_follow(
                 credential_path,
+                follow_symlinks=True,
                 max_bytes=_MAX_CREDENTIAL_BYTES,
             )
         except PrivatePathError as exc:
             return "warn", (
                 f"rdt-cli is installed, but credential.json cannot be read safely: {exc}."
             )
-        except OSError:
+        except (OSError, UnicodeError):
             return "warn", (
                 "rdt-cli is installed, but credential.json cannot be read safely; "
                 "Doctor did not run `rdt status`, which refreshes cookies automatically."
@@ -126,8 +126,12 @@ class RedditChannel(Channel):
             return "warn", self._rdt_login_hint()
 
         saved_at = data.get("saved_at")
-        if isinstance(saved_at, (int, float)) and (
-            time.time() - saved_at > _CREDENTIAL_TTL_SECONDS
+        # saved_at <= 0 (the manual template writes 0) means "unknown", not stale.
+        if (
+            isinstance(saved_at, (int, float))
+            and not isinstance(saved_at, bool)
+            and saved_at > 0
+            and time.time() - saved_at > _CREDENTIAL_TTL_SECONDS
         ):
             return "warn", (
                 "rdt-cli is installed, but the saved cookies are over 7 days old; Doctor "

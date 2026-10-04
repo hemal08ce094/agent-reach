@@ -4,9 +4,10 @@
 import http.cookiejar
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Optional
 
 from .base import Channel
 
@@ -17,7 +18,11 @@ _UA = (
 )
 _REFERER = "https://xueqiu.com/"
 _TIMEOUT = 10
-_XUEQIU_HOME = "https://xueqiu.com"
+# The bare homepage now only sets ``acw_tc``; /hq (after redirects) also sets
+# the anonymous ``xq_a_token`` group that the public quote APIs need (#664).
+_XUEQIU_HOME = "https://xueqiu.com/hq"
+# HTTP statuses that mean "this session/cookie was rejected".
+_AUTH_REJECTED_STATUSES = (400, 401, 403)
 
 # --------------- cookie-aware HTTP helpers --------------- #
 
@@ -25,7 +30,13 @@ _cookie_jar = http.cookiejar.CookieJar()
 _opener = urllib.request.build_opener(
     urllib.request.HTTPCookieProcessor(_cookie_jar),
 )
+#: True once the session is prepared for the current cookie state (either the
+#: stored cookie was injected or the anonymous warm-up ran).
 _cookies_initialized = False
+#: The stored cookie string currently injected into the jar (None = anonymous).
+_injected_cookie: Optional[str] = None
+#: A stored cookie Xueqiu rejected in this process; skipped until it changes.
+_failed_cookie: Any = None
 
 
 def _inject_cookie_string(cookie_str: str) -> None:
@@ -56,51 +67,134 @@ def _inject_cookie_string(cookie_str: str) -> None:
         _cookie_jar.set_cookie(cookie)
 
 
-def _load_cookies_from_config(config=None) -> bool:
-    """Try to load Xueqiu cookies from agent-reach config file (xueqiu_cookie key)."""
+def _reset_session() -> None:
+    """Forget every cookie so the next request starts from a clean state."""
+    global _cookies_initialized, _injected_cookie
+    _cookie_jar.clear()
+    _cookies_initialized = False
+    _injected_cookie = None
+
+
+def _configured_cookie(config=None) -> str:
+    """Return the saved ``xueqiu_cookie`` string, or "" when none is set."""
     try:
         from ..config import Config
 
         cfg = config if config is not None else Config(read_only=True)
-        cookie_str = cfg.get("xueqiu_cookie")
-        if not cookie_str:
-            return False
-        _inject_cookie_string(cookie_str)
-        return True
+        value = cfg.get("xueqiu_cookie")
     except Exception:
-        return False
+        return ""
+    return value.strip() if isinstance(value, str) else ""
 
 
-def _ensure_cookies(config=None) -> None:
+def _load_cookies_from_config(config=None) -> str:
+    """Inject the saved Xueqiu cookie (xueqiu_cookie key) into the jar.
+
+    Re-injects whenever the saved value changes (long-lived processes such as
+    the MCP server must notice a newly configured cookie) and drops a
+    previously injected cookie when the key is removed. Returns the active
+    cookie string, or "" when the session should be anonymous.
+    """
+    global _injected_cookie
+    cookie_str = _configured_cookie(config)
+    if not cookie_str or cookie_str == _failed_cookie:
+        if _injected_cookie is not None:
+            _reset_session()
+        return ""
+    if cookie_str != _injected_cookie or not any(True for _ in _cookie_jar):
+        _reset_session()
+        _inject_cookie_string(cookie_str)
+        _injected_cookie = cookie_str
+    return cookie_str
+
+
+def _has_anonymous_token() -> bool:
+    return any(cookie.name == "xq_a_token" for cookie in _cookie_jar)
+
+
+def _warm_up_anonymous_session() -> None:
+    """Visit /hq (following redirects) to receive the anonymous token group."""
+    req = urllib.request.Request(_XUEQIU_HOME, headers={"User-Agent": _UA})
+    resp = _opener.open(req, timeout=_TIMEOUT)
+    close = getattr(resp, "close", None)
+    if close is not None:
+        close()
+
+
+def _ensure_cookies(config=None):
     """Populate session cookies without touching browser credential stores.
 
     Priority order:
     1. Saved cookie string in ~/.agent-reach/config.yaml  (set by configure --from-browser)
-    2. Homepage visit fallback (only yields public session cookies and may not
-       be sufficient when Xueqiu requires a logged-in session)
+    2. Anonymous warm-up via https://xueqiu.com/hq, which sets ``xq_a_token``
+       (enough for the public quote/search/hot endpoints). Skipped when the
+       jar already holds a token, so a warm session costs one request.
+
+    Returns the stored cookie in use (truthy) or "" for an anonymous session.
     """
     global _cookies_initialized
-    if _cookies_initialized:
-        return
-    if _load_cookies_from_config(config):
+    stored = _load_cookies_from_config(config)
+    if stored:
         _cookies_initialized = True
-        return
-    # Fallback: visit homepage to pick up acw_tc anti-DDoS cookie.
-    # This is not sufficient for authenticated APIs but avoids hard failures
-    # on public endpoints that only need the session cookie.
-    req = urllib.request.Request(_XUEQIU_HOME, headers={"User-Agent": _UA})
-    _opener.open(req, timeout=_TIMEOUT)
+        return stored
+    if _cookies_initialized or _has_anonymous_token():
+        _cookies_initialized = True
+        return ""
+    _warm_up_anonymous_session()
     _cookies_initialized = True
+    return ""
 
 
-def _get_json(url: str, config=None) -> Any:
-    """Fetch *url* with Xueqiu session cookies and return parsed JSON."""
-    _ensure_cookies(config)
+def _fetch_json(url: str) -> Any:
     req = urllib.request.Request(
         url, headers={"User-Agent": _UA, "Referer": _REFERER}
     )
     with _opener.open(req, timeout=_TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _is_session_rejection(exc: urllib.error.HTTPError) -> bool:
+    """True for 401/403, or a 400 carrying Xueqiu's 400016 session error."""
+    if exc.code not in _AUTH_REJECTED_STATUSES:
+        return False
+    if exc.code != 400:
+        return True
+    try:
+        body = exc.read(4096)
+    except Exception:
+        return False
+    return b"400016" in (body or b"")
+
+
+def _get_json(url: str, config=None) -> Any:
+    """Fetch *url* with Xueqiu session cookies and return parsed JSON.
+
+    A saved cookie that Xueqiu rejects (typically an expired ``xq_a_token``)
+    no longer suppresses the anonymous fallback: the request is retried once
+    with a fresh anonymous session and the bad cookie is skipped for the rest
+    of the process (until the saved value changes).
+    """
+    global _failed_cookie
+    stored = _ensure_cookies(config)
+    try:
+        return _fetch_json(url)
+    except urllib.error.HTTPError as exc:
+        try:
+            rejected = bool(stored) and _is_session_rejection(exc)
+        finally:
+            exc.close()
+        if not rejected:
+            raise
+    _failed_cookie = stored
+    _reset_session()
+    _ensure_cookies(config)
+    return _fetch_json(url)
+
+
+def stored_cookie_rejected(config=None) -> bool:
+    """Whether the saved xueqiu_cookie was rejected during this process."""
+    cookie_str = _configured_cookie(config)
+    return bool(cookie_str) and cookie_str == _failed_cookie
 
 
 def _strip_html(text: str) -> str:
@@ -114,7 +208,7 @@ def _strip_html(text: str) -> str:
 class XueqiuChannel(Channel):
     name = "xueqiu"
     description = "Xueqiu stock quotes and community posts"
-    backends = ["Xueqiu API (login cookie required)"]
+    backends = ["Xueqiu API"]
     tier = 1
 
     # ------------------------------------------------------------------ #
@@ -141,7 +235,14 @@ class XueqiuChannel(Channel):
             quote = (data.get("data") or {}).get("quote") or {}
             if quote:
                 self.active_backend = self.backends[0]
-                return "ok", "Public API available (quotes, search, hot posts, hot stocks)"
+                message = "Public API available (quotes, search, hot posts, hot stocks)"
+                if stored_cookie_rejected(config):
+                    message += (
+                        "; the saved xueqiu_cookie was rejected (probably expired), "
+                        "so an anonymous session was used. Remove xueqiu_cookie from "
+                        "~/.agent-reach/config.yaml or save a fresh one."
+                    )
+                return "ok", message
             return "warn", "Unexpected API response (empty data)"
         except Exception as e:
             from agent_reach.utils.text import scrub_url_credentials
@@ -149,8 +250,10 @@ class XueqiuChannel(Channel):
             detail = scrub_url_credentials(e).rstrip(": ")
             return "warn", (
                 f"Xueqiu API connection failed: {detail}. "
-                "If a login cookie is needed, run: agent-reach configure "
-                "--from-browser chrome --platform xueqiu; "
+                "The public endpoints work anonymously; if you saved a "
+                "xueqiu_cookie it may have expired (remove it from "
+                "~/.agent-reach/config.yaml). To save a fresh login cookie run: "
+                "agent-reach configure --from-browser chrome --platform xueqiu; "
                 "doctor never reads browser cookies automatically."
             )
 

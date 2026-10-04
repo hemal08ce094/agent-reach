@@ -20,19 +20,18 @@ Designed to be importable from channels (e.g. YouTubeChannel.transcribe).
 
 from __future__ import annotations
 
-import ipaddress
 import math
+import re
 import shutil
-import socket
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import urlparse
 
 import requests
 
 from agent_reach.config import Config
+from agent_reach.utils.url import host_matches, normalize_public_http_url
 
 # Whisper API limit is 25MB; leave headroom for multipart overhead.
 SIZE_LIMIT_BYTES = 24 * 1024 * 1024
@@ -42,6 +41,19 @@ MAX_CHUNKS = 24  # 4 hours at the standard 10-minute segment size
 MAX_TOTAL_CHUNK_BYTES = 96 * 1024 * 1024
 MAX_AUDIO_SECONDS = MAX_CHUNKS * CHUNK_SECONDS
 FFPROBE_TIMEOUT_SECONDS = 30
+
+# Browsers / keyrings accepted by yt-dlp's --cookies-from-browser.
+YTDLP_BROWSERS = frozenset(
+    {"brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale"}
+)
+YTDLP_KEYRINGS = frozenset({"KWALLET", "KWALLET5", "KWALLET6", "GNOMEKEYRING", "BASICTEXT"})
+# BROWSER[+KEYRING][:PROFILE][::CONTAINER]
+_COOKIE_SOURCE_RE = re.compile(
+    r"(?P<browser>[^+:]+)"
+    r"(?:\s*\+\s*(?P<keyring>[^:]+))?"
+    r"(?:\s*:\s*(?!:)(?P<profile>.+?))?"
+    r"(?:\s*::\s*(?P<container>.+))?"
+)
 
 PROVIDERS = {
     "groq": {
@@ -67,12 +79,6 @@ class MissingDependency(TranscribeError):
 
 class NoProviderConfigured(TranscribeError):
     """Raised when no provider has an API key configured."""
-
-
-_BLOCKED_HOSTS = {
-    "localhost",
-    "metadata.google.internal",
-}
 
 
 def _require(binary: str) -> None:
@@ -101,11 +107,14 @@ def _probe_audio_duration(path: Path) -> float:
         "-of",
         "default=noprint_wrappers=1:nokey=1",
         "-i",
-        str(path),
+        # Absolute so "-x.wav" / "Podcast: x.wav" are never read as an
+        # option or a protocol.
+        str(path.absolute()),
     ]
     try:
         proc = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -158,103 +167,113 @@ def _run(cmd: List[str], timeout: int = 600) -> None:
     cmd carries user-supplied URLs/paths into yt-dlp/ffmpeg — a stalled
     network read or a hung probe must not block the CLI forever.
     """
+    label = cmd[0] if cmd else "command"
     try:
         proc = subprocess.run(
             cmd,
+            # Never let ffmpeg/yt-dlp consume the caller's stdin (pipelines).
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise TranscribeError(f"{cmd[0]} timed out after {timeout}s")
+        raise TranscribeError(f"{label} timed out after {timeout}s")
     if proc.returncode != 0:
         raise TranscribeError(
-            f"{cmd[0]} failed (exit {proc.returncode}): {proc.stderr.strip()[:300]}"
+            f"{label} failed (exit {proc.returncode}): {proc.stderr.strip()[:300]}"
         )
-
-
-def _literal_ip(host: str):
-    """Return the address a literal host denotes, or None for a real hostname.
-
-    ``ipaddress`` only accepts the canonical dotted-quad form, but the C
-    resolver behind yt-dlp accepts the whole ``inet_aton`` grammar: ``127.1``,
-    ``2130706433``, ``0x7f000001`` and ``0177.0.0.1`` all reach 127.0.0.1, and
-    ``0xA9FEA9FE`` reaches the cloud metadata endpoint. Parsing with the same
-    grammar keeps those shorthands from slipping past the private-address
-    check. This is literal parsing only — no name is resolved here.
-    """
-    try:
-        return ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    try:
-        packed = socket.inet_aton(host)
-    except OSError:
-        return None
-    return ipaddress.IPv4Address(packed)
-
-
-def _is_private_ip(value: str) -> bool:
-    ip = _literal_ip(value)
-    if ip is None:
-        return False
-    return any(
-        (
-            ip.is_private,
-            ip.is_loopback,
-            ip.is_link_local,
-            ip.is_reserved,
-            ip.is_multicast,
-            ip.is_unspecified,
-        )
-    )
 
 
 def _assert_safe_public_url(url: str) -> None:
-    """Reject literal local/internal URLs without DNS-resolving public hosts."""
-    if "://" not in url:
-        before_slash = url.split("/", 1)[0]
-        if ":" in before_slash:
-            host_part, port_part = before_slash.rsplit(":", 1)
-            if not host_part or not port_part.isdigit():
-                raise TranscribeError("SSRF blocked: only public http(s) URLs are allowed")
-        normalized_url = f"https://{url}"
-        parsed = urlparse(normalized_url)
-    else:
-        normalized_url = url
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"}:
-            raise TranscribeError("SSRF blocked: only public http(s) URLs are allowed")
+    """Reject local/internal URLs without DNS-resolving public hosts.
 
-    raw_authority = normalized_url.split("://", 1)[1]
-    raw_authority = raw_authority.split("/", 1)[0]
-    raw_authority = raw_authority.split("?", 1)[0]
-    raw_authority = raw_authority.split("#", 1)[0]
-    if "\\" in raw_authority or "%" in raw_authority:
-        raise TranscribeError("SSRF blocked: encoded or ambiguous URL host")
-
-    raw_host = (parsed.hostname or "").strip().rstrip(".")
-    if not raw_host:
-        raise TranscribeError("SSRF blocked: URL host is missing")
+    Delegates to the shared :func:`normalize_public_http_url` so transcription
+    and the web channel enforce one policy (IDNA-normalised host, literal
+    IPv4 shorthands, ``.internal``/``.local``/``.lan`` suffixes, non-global
+    addresses, userinfo, backslashes and control characters).
+    """
     try:
-        host = raw_host.encode("idna").decode("ascii").lower().rstrip(".")
-    except UnicodeError:
-        raise TranscribeError("SSRF blocked: URL host is invalid") from None
-    if host in _BLOCKED_HOSTS or host.endswith(".localhost"):
-        raise TranscribeError("SSRF blocked: internal host is not allowed")
-    if _is_private_ip(host):
-        raise TranscribeError("SSRF blocked: private/internal IP is not allowed")
+        normalize_public_http_url(url)
+    except ValueError:
+        raise TranscribeError(
+            "SSRF blocked: only public http(s) URLs are allowed "
+            "(private/internal hosts are rejected)"
+        ) from None
 
 
-def download_audio(url: str, out_dir: Path) -> Path:
-    """Download audio with yt-dlp into out_dir; return the resulting file path."""
+def youtube_cookie_source(value: object) -> Optional[str]:
+    """Validate and canonicalise a yt-dlp ``--cookies-from-browser`` value.
+
+    Grammar: ``BROWSER[+KEYRING][:PROFILE][::CONTAINER]``. Returns None for an
+    empty value and raises :class:`TranscribeError` for anything yt-dlp would
+    reject, so a bad config value fails before a download starts.
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise TranscribeError("YouTube cookie browser must be a string")
+    source = value.strip()
+    if not source:
+        return None
+    if any(character in source for character in "\r\n\0"):
+        raise TranscribeError("YouTube cookie browser contains an invalid control character")
+    match = _COOKIE_SOURCE_RE.fullmatch(source)
+    if match is None:
+        raise TranscribeError("invalid YouTube cookie browser specification")
+    browser = match.group("browser").strip().lower()
+    if browser not in YTDLP_BROWSERS:
+        supported = ", ".join(sorted(YTDLP_BROWSERS))
+        raise TranscribeError(
+            f"unsupported YouTube cookie browser {browser!r}; choose one of: {supported}"
+        )
+    normalized = browser
+    keyring = match.group("keyring")
+    if keyring is not None:
+        if keyring.strip().upper() not in YTDLP_KEYRINGS:
+            supported = ", ".join(sorted(YTDLP_KEYRINGS))
+            raise TranscribeError(
+                f"unsupported YouTube cookie keyring {keyring.strip()!r}; "
+                f"choose one of: {supported}"
+            )
+        normalized += f"+{keyring.strip().upper()}"
+    profile = match.group("profile")
+    if profile is not None and profile.strip():
+        normalized += f":{profile.strip()}"
+    container = match.group("container")
+    if container is not None and container.strip():
+        normalized += f"::{container.strip()}"
+    return normalized
+
+
+def _is_youtube_url(url: str) -> bool:
+    return host_matches(url, "youtube.com", "youtu.be")
+
+
+def download_audio(
+    url: str,
+    out_dir: Path,
+    *,
+    cookies_from_browser: Optional[str] = None,
+) -> Path:
+    """Download audio with yt-dlp into out_dir; return the resulting file path.
+
+    ``cookies_from_browser`` (the ``youtube_cookies_from`` config value) is
+    passed as ``--cookies-from-browser`` only for YouTube hosts, so browser
+    cookies never reach other sites.
+    """
     _assert_safe_public_url(url)
+    cookie_source = (
+        youtube_cookie_source(cookies_from_browser) if _is_youtube_url(url) else None
+    )
+    cookie_args = ["--cookies-from-browser", cookie_source] if cookie_source else []
     _require("yt-dlp")
-    template = out_dir / "source.%(ext)s"
+    template = out_dir.absolute() / "source.%(ext)s"
     _run(
         [
             "yt-dlp",
+            *cookie_args,
             "-x",
             "--audio-format",
             "m4a",
@@ -288,11 +307,12 @@ def compress_audio(src: Path, out_dir: Path) -> Path:
     _run(
         [
             "ffmpeg",
+            "-nostdin",
             "-loglevel",
             "error",
             "-y",
             "-i",
-            str(src),
+            str(src.absolute()),
             "-t",
             str(MAX_AUDIO_SECONDS),
             "-vn",
@@ -302,7 +322,7 @@ def compress_audio(src: Path, out_dir: Path) -> Path:
             "16000",
             "-b:a",
             "32k",
-            str(dst),
+            str(dst.absolute()),
         ]
     )
     return dst
@@ -326,11 +346,12 @@ def chunk_audio(src: Path, out_dir: Path, segment_seconds: int = CHUNK_SECONDS) 
     _run(
         [
             "ffmpeg",
+            "-nostdin",
             "-loglevel",
             "error",
             "-y",
             "-i",
-            str(src),
+            str(src.absolute()),
             "-t",
             str(MAX_AUDIO_SECONDS),
             "-f",
@@ -343,7 +364,7 @@ def chunk_audio(src: Path, out_dir: Path, segment_seconds: int = CHUNK_SECONDS) 
             "16000",
             "-b:a",
             "32k",
-            str(pattern),
+            str(pattern.absolute()),
         ]
     )
     chunks = sorted(out_dir.glob("chunk_*.m4a"))
@@ -449,7 +470,17 @@ def _transcribe_in_dir(source: str, order: List[str], cfg: Config, work_dir: Pat
     if src_path.is_file():
         audio = src_path
     else:
-        audio = download_audio(source, work_dir)
+        cookie_source = (
+            cfg.get("youtube_cookies_from") if _is_youtube_url(source) else None
+        )
+        if cookie_source:
+            audio = download_audio(
+                source,
+                work_dir,
+                cookies_from_browser=cookie_source,
+            )
+        else:
+            audio = download_audio(source, work_dir)
 
     _require_size_at_most(audio, MAX_SOURCE_BYTES, "source")
     _require_duration_within_budget(audio)

@@ -5,6 +5,7 @@ import os
 
 from agent_reach.config import Config
 from agent_reach.probe import probe_command
+from agent_reach.utils.paths import home_dir
 
 from .base import Channel
 
@@ -37,8 +38,31 @@ class XiaoyuzhouChannel(Channel):
                 "ffmpeg cannot run. Reinstall: brew install ffmpeg (macOS) / apt install ffmpeg (Linux)"
             )
 
-        # Check script exists
-        script = os.path.expanduser("~/.agent-reach/tools/xiaoyuzhou/transcribe.sh")
+        # The shipped script invokes all three before it can produce a
+        # transcript; ffmpeg alone can be installed while ffprobe is absent.
+        missing = []
+        for tool, flag in (("ffprobe", "-version"), ("curl", "--version"), ("perl", "-v")):
+            tool_probe = probe_command(tool, [flag], timeout=10)
+            if tool_probe.status == "missing":
+                missing.append(tool)
+            elif not tool_probe.ok:
+                return "error", (
+                    f"The Xiaoyuzhou transcription tool {tool} cannot run; "
+                    "repair it and retry."
+                )
+        if missing:
+            return "off", (
+                "Xiaoyuzhou transcription is missing required tools: "
+                + ", ".join(missing)
+                + ".\n"
+                "  ffprobe ships with ffmpeg; install curl/perl with the system package manager.\n"
+                "  Ubuntu/Debian: apt install -y ffmpeg curl perl\n"
+                "  macOS: brew install ffmpeg curl perl"
+            )
+
+        # Check script exists. home_dir() honours $HOME on every platform,
+        # matching where the installer and uninstall look.
+        script = home_dir() / ".agent-reach" / "tools" / "xiaoyuzhou" / "transcribe.sh"
         if not os.path.isfile(script):
             return "off", (
                 "Transcription script not installed. Run:\n"

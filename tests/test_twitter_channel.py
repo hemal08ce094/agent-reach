@@ -25,7 +25,7 @@ def test_twitter_cli_without_explicit_auth_is_unverified():
 
     assert status == "warn"
     assert "Cookie-Editor" in message
-    assert channel.active_backend is None
+    assert channel.active_backend == "twitter-cli"  # B9: set on warn too
 
 
 def test_saved_credentials_are_recognised_without_starting_upstream(
@@ -48,7 +48,7 @@ def test_saved_credentials_are_recognised_without_starting_upstream(
     assert status == "warn"
     assert "configured" in message
     assert "does not run" in message
-    assert channel.active_backend is None
+    assert channel.active_backend == "twitter-cli"  # B9: set on warn too
     run.assert_not_called()
     assert "TWITTER_AUTH_TOKEN" not in os.environ
     assert "TWITTER_CT0" not in os.environ
@@ -94,7 +94,7 @@ def test_bird_with_explicit_env_remains_unverified(monkeypatch):
 
     assert status == "warn"
     assert "not verified live" in message
-    assert channel.active_backend is None
+    assert channel.active_backend == "bird CLI (legacy)"  # B9: set on warn too
 
 
 def test_bird_without_explicit_env_is_warn(monkeypatch):
@@ -106,7 +106,7 @@ def test_bird_without_explicit_env_is_warn(monkeypatch):
 
     assert status == "warn"
     assert "no explicit" in message
-    assert channel.active_backend is None
+    assert channel.active_backend == "bird CLI (legacy)"  # B9: set on warn too
 
 
 def test_nothing_installed_returns_install_hint():
@@ -168,4 +168,4 @@ def test_all_warn_returns_first_warning_without_active_backend():
 
     assert status == "warn"
     assert message == "twitter-cli unverified"
-    assert channel.active_backend is None
+    assert channel.active_backend == "twitter-cli"  # B9: set on warn too

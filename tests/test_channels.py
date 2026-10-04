@@ -68,7 +68,7 @@ class TestOpenCLISiteChannels:
         ch = FacebookChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert ch.active_backend is None
+        assert ch.active_backend == "OpenCLI"  # B9: set on warn too
         assert "bridge connected" in msg
         assert "login and real commands were not verified live" in msg
         assert "facebook.com" in msg
@@ -76,7 +76,7 @@ class TestOpenCLISiteChannels:
         instagram = InstagramChannel()
         status, msg = instagram.check()
         assert status == "warn"
-        assert instagram.active_backend is None
+        assert instagram.active_backend == "OpenCLI"  # B9: set on warn too
         assert "bridge connected" in msg
         assert "instagram.com" in msg
 
@@ -103,7 +103,7 @@ class TestOpenCLISiteChannels:
         ch = InstagramChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert ch.active_backend is None
+        assert ch.active_backend == "OpenCLI"  # B9: set on warn too
         assert "Chrome extension" in msg
 
 
@@ -756,7 +756,10 @@ class TestXueqiuChannel:
         requested = []
 
         class FakeResponse:
-            pass
+            closed = False
+
+            def close(self):
+                FakeResponse.closed = True
 
         monkeypatch.setattr(
             xueqiu_mod._opener,
@@ -765,7 +768,9 @@ class TestXueqiuChannel:
         )
         xueqiu_mod._ensure_cookies()
 
-        assert requested == ["https://xueqiu.com"]
+        # /hq (not the bare homepage) hands out the anonymous xq_a_token (#664).
+        assert requested == ["https://xueqiu.com/hq"]
+        assert FakeResponse.closed is True
         assert xueqiu_mod._cookies_initialized is True
 
     def test_get_json_sends_referer_and_browser_ua(self, monkeypatch):
@@ -852,7 +857,7 @@ class TestRedditChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "not verified live" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "rdt-cli"  # B9: set on warn too
 
     def test_reports_warn_when_cookie_is_missing(self, monkeypatch):
         self._isolate(monkeypatch)
@@ -863,7 +868,7 @@ class TestRedditChannel:
         assert status == "warn"
         assert "Cookie-Editor" in msg
         assert "chromewebstore.google.com" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "rdt-cli"  # B9: set on warn too
 
     def test_can_handle_reddit_urls(self):
         from agent_reach.channels.reddit import RedditChannel
@@ -933,7 +938,7 @@ class TestXiaoHongShuChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "not verified live" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "xhs-cli (xiaohongshu-cli)"  # B9: set on warn too
 
     def test_saved_cli_cookie_refuses_ancestor_symlink(
         self, monkeypatch, isolated_home
@@ -953,8 +958,10 @@ class TestXiaoHongShuChannel:
 
         status, message = XiaoHongShuChannel()._check_xhs_cli()
 
+        # Read-only doctor reads follow symlinks (dotfile-managed homes); the
+        # secret value must still never reach the message.
         assert status == "warn"
-        assert "symlink" in message
+        assert "do-not-read" not in message
 
     def test_reports_warn_when_not_authenticated(self, monkeypatch):
         self._isolate(monkeypatch)
@@ -970,7 +977,7 @@ class TestXiaoHongShuChannel:
         assert status == "warn"
         assert "Cookie-Editor" in msg
         assert "configure xhs-cookies" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "xhs-cli (xiaohongshu-cli)"  # B9: set on warn too
 
     def test_reports_off_when_nothing_installed(self, monkeypatch):
         self._isolate(monkeypatch)
@@ -1013,7 +1020,7 @@ class TestXiaoHongShuChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert msg == "extension not connected"
-        assert ch.active_backend is None
+        assert ch.active_backend == "OpenCLI"  # B9: set on warn too
 
     def test_mcp_service_wins_when_opencli_absent(
         self, monkeypatch, tmp_path
@@ -1048,7 +1055,7 @@ class TestXiaoHongShuChannel:
         ch = XiaoHongShuChannel()
         status, msg = ch.check()
         assert status == "warn"
-        assert ch.active_backend is None
+        assert ch.active_backend == "xiaohongshu-mcp"  # B9: set on warn too
         assert "has not verified the login" in msg
 
     def test_mcp_reachable_but_mcporter_unconfigured_warns(
@@ -1085,7 +1092,7 @@ class TestXiaoHongShuChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "mcporter config add xiaohongshu" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "xiaohongshu-mcp"  # B9: set on warn too
 
     def test_mcp_metadata_containing_xiaohongshu_is_not_configured(
         self, monkeypatch, tmp_path
@@ -1128,7 +1135,7 @@ class TestXiaoHongShuChannel:
 
         assert status == "warn"
         assert "not connected to mcporter" in message
-        assert ch.active_backend is None
+        assert ch.active_backend == "xiaohongshu-mcp"  # B9: set on warn too
 
     def test_all_xhs_auth_hints_exclude_qr_and_automatic_cookie_read(
         self, monkeypatch
@@ -1283,7 +1290,7 @@ class TestBilibiliChannel:
         status, _ = ch.check()
 
         assert status == "warn"
-        assert ch.active_backend is None
+        assert ch.active_backend == "OpenCLI"  # B9: set on warn too
 
     def test_api_only_still_ok_with_install_nudge(self, monkeypatch):
         self._isolate(monkeypatch, api_ok=True)
@@ -1361,7 +1368,7 @@ class TestGitHubChannel:
         assert status == "warn"
         assert "explicit auth config" in msg
         assert "configured-secret" not in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "gh CLI"  # B9: set on warn too
 
     def test_no_auth_metadata_remains_warn_and_inactive(
         self, monkeypatch, tmp_path
@@ -1382,7 +1389,7 @@ class TestGitHubChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "gh auth login" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "gh CLI"  # B9: set on warn too
 
     def test_hosts_metadata_is_read_without_exposing_token(
         self, monkeypatch, isolated_home
@@ -1445,10 +1452,11 @@ class TestGitHubChannel:
         channel = GitHubChannel()
         status, message = channel.check()
 
+        # Read-only doctor reads follow symlinks; the token stays out of output.
         assert status == "warn"
-        assert "cannot be confirmed safely" in message
+        assert "explicit auth config was found" in message
         assert "do-not-read" not in message
-        assert channel.active_backend is None
+        assert channel.active_backend == "gh CLI"
 
 
 class TestLinkedInChannel:
@@ -1565,7 +1573,7 @@ class TestLinkedInChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "did not start" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "mcp-server-linkedin"  # B9: set on warn too
 
     def test_config_metadata_containing_linkedin_is_not_a_backend(
         self, monkeypatch, tmp_path
@@ -1657,7 +1665,7 @@ class TestExaSearchChannel:
         status, msg = ch.check()
         assert status == "warn"
         assert "did not start" in msg
-        assert ch.active_backend is None
+        assert ch.active_backend == "Exa via mcporter"  # B9: set on warn too
 
     def test_config_metadata_containing_exa_is_not_a_backend(
         self, monkeypatch, tmp_path
@@ -1705,8 +1713,11 @@ class TestExaSearchChannel:
 
         ch = ExaSearchChannel()
         status, message = ch.check()
-        assert status == "error"
+        # mcporter ignores a malformed project layer, so Doctor warns about the
+        # skipped layer instead of failing the channel (B5 / #762).
+        assert status == "warn"
         assert "JSON" in message
+        assert "ignored" in message
         assert ch.active_backend is None
 
 

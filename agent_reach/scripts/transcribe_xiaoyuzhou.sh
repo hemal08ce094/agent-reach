@@ -32,14 +32,19 @@ ensure_python() {
     if [ "${#PYTHON_CMD[@]}" -gt 0 ]; then
         return 0
     fi
-    if command -v python3 >/dev/null 2>&1; then
+    # Proving the name exists is not enough: the candidate must also run.
+    # On Windows `command -v python3` often resolves to the Microsoft Store App
+    # Execution Alias (WindowsApps/python3.exe, exit code 49). It exists but
+    # cannot run, so every later Python call would fail and the URL check would
+    # misreport valid links as unsupported hosts.
+    if command -v python3 >/dev/null 2>&1 && python3 -c "" >/dev/null 2>&1; then
         PYTHON_CMD=(python3)
-    elif command -v python >/dev/null 2>&1; then
+    elif command -v python >/dev/null 2>&1 && python -c "" >/dev/null 2>&1; then
         PYTHON_CMD=(python)
-    elif command -v py >/dev/null 2>&1; then
+    elif command -v py >/dev/null 2>&1 && py -3 -c "" >/dev/null 2>&1; then
         PYTHON_CMD=(py -3)
     else
-        echo "❌ Python not found (tried python3, python, py -3)" >&2
+        echo "❌ No working Python found (tried python3, python, py -3)" >&2
         return 1
     fi
 }
@@ -105,6 +110,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep the Groq key out of argv (visible to every user via `ps`): curl reads the
+# Authorization header from a 0600 config file inside the private work dir.
+case "$GROQ_API_KEY" in
+    *$'\n'*|*$'\r'*)
+        echo "❌ GROQ_API_KEY contains a line break" >&2
+        exit 1 ;;
+esac
+GROQ_CURL_CONFIG="$WORK_DIR/groq-auth.curlrc"
+GROQ_KEY_ESCAPED=${GROQ_API_KEY//\\/\\\\}
+GROQ_KEY_ESCAPED=${GROQ_KEY_ESCAPED//\"/\\\"}
+(
+    umask 077
+    printf 'header = "Authorization: Bearer %s"\n' "$GROQ_KEY_ESCAPED" > "$GROQ_CURL_CONFIG"
+)
+unset GROQ_KEY_ESCAPED
+
+# The Chinese Whisper prompt is functional: it asks for Mandarin output with full
+# Chinese punctuation, which Whisper otherwise omits. It is passed to curl as
+# -F "prompt=<file" so non-ASCII text never travels through argv (which breaks
+# under GBK code pages on Windows, #720).
+WHISPER_PROMPT_FILE="$WORK_DIR/whisper-prompt.txt"
+printf '%s' "以下是一段中文普通话播客录音，请输出包含完整中文标点（，。？！：；“”‘’）的转写文本。" > "$WHISPER_PROMPT_FILE"
+
 echo "📻 Xiaoyuzhou podcast transcription"
 echo "===================="
 
@@ -140,7 +168,7 @@ echo "📦 File size: $FILE_SIZE"
 
 # Step 3: get the duration
 if ! DURATION_RAW=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 \
-    "$WORK_DIR/original.$EXT" 2>/dev/null); then
+    "$WORK_DIR/original.$EXT" 2>/dev/null </dev/null); then
     echo "❌ ffprobe could not read the audio duration" >&2
     exit 1
 fi
@@ -177,7 +205,7 @@ echo "⏱️  Duration: ${DURATION_MIN}m ${DURATION_SEC}s"
 
 # Step 4: convert to low-bitrate mono MP3
 echo "🔄 Transcoding..."
-ffmpeg -y -i "$WORK_DIR/original.$EXT" -t "$MAX_DURATION_SECONDS" -b:a "$AUDIO_BITRATE" -ac 1 "$WORK_DIR/mono.mp3" 2>/dev/null
+ffmpeg -nostdin -y -i "$WORK_DIR/original.$EXT" -t "$MAX_DURATION_SECONDS" -b:a "$AUDIO_BITRATE" -ac 1 "$WORK_DIR/mono.mp3" 2>/dev/null
 MONO_SIZE=$(stat -c%s "$WORK_DIR/mono.mp3" 2>/dev/null || stat -f%z "$WORK_DIR/mono.mp3")
 MONO_SIZE_MB=$(awk -v bytes="$MONO_SIZE" 'BEGIN { printf "%.1f", bytes / 1024 / 1024 }')
 echo "📦 After transcoding: ${MONO_SIZE_MB}MB"
@@ -198,7 +226,7 @@ else
     
     for i in $(seq 0 $((NUM_CHUNKS - 1))); do
         START=$((i * CHUNK_DURATION))
-        ffmpeg -y -i "$WORK_DIR/mono.mp3" -ss "$START" -t "$CHUNK_DURATION" -c copy "$WORK_DIR/chunk_${i}.mp3" 2>/dev/null
+        ffmpeg -nostdin -y -i "$WORK_DIR/mono.mp3" -ss "$START" -t "$CHUNK_DURATION" -c copy "$WORK_DIR/chunk_${i}.mp3" 2>/dev/null
         CHUNK_SIZE=$(ls -lh "$WORK_DIR/chunk_${i}.mp3" | awk '{print $5}')
         echo "   Chunk $((i+1))/$NUM_CHUNKS: $CHUNK_SIZE"
     done
@@ -210,19 +238,17 @@ echo "🎙️  Transcribing (Groq Whisper large-v3)..."
 for i in $(seq 0 $((NUM_CHUNKS - 1))); do
     echo -n "   Chunk $((i+1))/$NUM_CHUNKS... "
     
-    # The Chinese Whisper prompt is functional: it asks for Mandarin output with full
-    # Chinese punctuation (，。？！：；“”‘’), which Whisper otherwise omits.
     RESPONSE=$(curl --silent --show-error \
         --connect-timeout "$CURL_CONNECT_TIMEOUT" \
         --max-time "$GROQ_TIMEOUT" \
         --max-filesize "$MAX_API_RESPONSE_BYTES" \
         -w "\n%{http_code}" \
         https://api.groq.com/openai/v1/audio/transcriptions \
-        -H "Authorization: Bearer $GROQ_API_KEY" \
+        -K "$GROQ_CURL_CONFIG" \
         -F file="@$WORK_DIR/chunk_${i}.mp3" \
         -F model="whisper-large-v3" \
         -F language="zh" \
-        -F prompt="以下是一段中文普通话播客录音，请输出包含完整中文标点（，。？！：；“”‘’）的转写文本。" \
+        -F "prompt=<$WHISPER_PROMPT_FILE" \
         -F response_format="text")
     
     HTTP_CODE=$(echo "$RESPONSE" | tail -1)
@@ -249,11 +275,11 @@ for i in $(seq 0 $((NUM_CHUNKS - 1))); do
                 --max-filesize "$MAX_API_RESPONSE_BYTES" \
                 -w "\n%{http_code}" \
                 https://api.groq.com/openai/v1/audio/transcriptions \
-                -H "Authorization: Bearer $GROQ_API_KEY" \
+                -K "$GROQ_CURL_CONFIG" \
                 -F file="@$WORK_DIR/chunk_${i}.mp3" \
                 -F model="whisper-large-v3" \
                 -F language="zh" \
-                -F prompt="以下是一段中文普通话播客录音，请输出包含完整中文标点（，。？！：；“”‘’）的转写文本。" \
+                -F "prompt=<$WHISPER_PROMPT_FILE" \
                 -F response_format="text")
             HTTP_CODE=$(echo "$RESPONSE" | tail -1)
             BODY=$(echo "$RESPONSE" | sed '$d')

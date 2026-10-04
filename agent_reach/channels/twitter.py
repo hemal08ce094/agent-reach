@@ -23,7 +23,9 @@ def twitter_cli_child_env(config=None) -> dict[str, str]:
         ("TWITTER_AUTH_TOKEN", "twitter_auth_token"),
         ("TWITTER_CT0", "twitter_ct0"),
     ):
-        if env_name in os.environ:
+        # An empty shell variable (TWITTER_AUTH_TOKEN="") must not hide the
+        # saved credential; only a non-empty value is authoritative.
+        if os.environ.get(env_name):
             continue
         value = config.get(config_key)
         if value:
@@ -65,11 +67,10 @@ class TwitterChannel(Channel):
                 continue  # not installed: not a candidate
             findings.append((backend, *result))
 
-        for wanted in ("ok", "warn"):
-            for backend, status, message in findings:
-                if status == wanted:
-                    self.active_backend = backend if status == "ok" else None
-                    return status, message
+        # First ok wins, else first warn; active_backend is set for both (B9).
+        picked = self.pick_finding(findings)
+        if picked is not None:
+            return picked
 
         if findings:  # only broken/timeout candidates left
             return "error", "\n".join(m for _, _, m in findings)

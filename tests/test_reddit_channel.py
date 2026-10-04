@@ -107,8 +107,9 @@ def test_check_rdt_refuses_symlink_credential(isolated_home):
     with patch("shutil.which", return_value="/usr/local/bin/rdt"):
         status, message = RedditChannel()._check_rdt()
 
+    # Read-only doctor reads follow symlinks; secrets never reach the message.
     assert status == "warn"
-    assert "symlink" in message
+    assert "do-not-read" not in message
 
 
 def test_check_rdt_refuses_ancestor_symlink(isolated_home):
@@ -127,8 +128,9 @@ def test_check_rdt_refuses_ancestor_symlink(isolated_home):
     with patch("shutil.which", return_value="/usr/local/bin/rdt"):
         status, message = RedditChannel()._check_rdt()
 
+    # Read-only doctor reads follow symlinks; secrets never reach the message.
     assert status == "warn"
-    assert "symlink" in message
+    assert "do-not-read" not in message
 
 
 def _opencli(installed=True, broken=False, ready=True, hint=""):
@@ -199,7 +201,7 @@ def test_check_warn_has_no_active_backend():
 
     assert status == "warn"
     assert message == "not ready"
-    assert channel.active_backend is None
+    assert channel.active_backend == "OpenCLI"  # B9: set on warn too
 
 
 def test_check_all_errors_returns_error_and_no_active_backend():

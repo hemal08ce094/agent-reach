@@ -97,3 +97,29 @@ def isolated_xueqiu_cookie_jar(monkeypatch):
     monkeypatch.setattr(xueqiu, "_cookies_initialized", False)
     yield
     xueqiu._cookie_jar.clear()
+
+
+@pytest.fixture(autouse=True)
+def offline_jina_probe(monkeypatch):
+    """WebChannel.check() HEAD-probes r.jina.ai (#685); keep the suite offline.
+
+    Tests that exercise the probe itself restore the real function explicitly.
+    """
+    from agent_reach.channels import web
+
+    monkeypatch.setattr(web, "_probe_jina", lambda: None)
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Fail every outbound socket connection so checks take their offline path."""
+    import socket
+
+    def _refuse(self, address):
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(socket.socket, "connect", _refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda self, address: 111)
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+    )

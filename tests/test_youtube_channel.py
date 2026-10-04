@@ -188,7 +188,10 @@ def test_check_ok_with_deno():
          patch("shutil.which", side_effect=_which("deno")):
         status, message = ch.check()
     assert status == "ok"
-    assert message == "Can extract video info and subtitles"
+    assert message == (
+        "yt-dlp and its JS runtime are ready; video access and subtitles "
+        "were not verified live"
+    )
     assert ch.active_backend == "yt-dlp"
 
 

@@ -4,7 +4,11 @@
 import shutil
 
 from .base import Channel
-from .mcporter import McporterConfigError, inspect_mcporter_config
+from .mcporter import (
+    McporterConfigError,
+    inspect_mcporter_config,
+    skipped_layers_note,
+)
 
 
 class ExaSearchChannel(Channel):
@@ -29,6 +33,8 @@ class ExaSearchChannel(Channel):
         except McporterConfigError as exc:
             return "error", f"mcporter config check failed: {exc}"
         if "exa" in inspection.server_names:
+            # Configured: this is the backend that serves the channel (B9).
+            self.active_backend = self.backends[0]
             return "warn", (
                 "Exa is in the mcporter config, but Doctor did not start the remote "
                 "service to verify connectivity, so config alone cannot prove it works."
@@ -39,6 +45,9 @@ class ExaSearchChannel(Channel):
                 "editor imports, which Doctor does not expand to avoid reading more "
                 "credentials, so it is unverified."
             )
+        note = skipped_layers_note(inspection)
+        if note:
+            return "warn", note
         return "off", (
             "mcporter is installed but Exa is not configured. Run:\n"
             "  mcporter config add exa https://mcp.exa.ai/mcp --scope home"

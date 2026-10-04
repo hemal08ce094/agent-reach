@@ -58,17 +58,21 @@ class BilibiliChannel(Channel):
             if result is None:
                 continue
             findings.append((backend, *result))
+            if result[0] == "ok":
+                # The first usable backend wins; probing the rest (e.g. the
+                # search API, a 2-4 s network round trip) cannot change that.
+                break
 
         # If a backend is broken, surface its fix even when another candidate succeeds
         broken_notes = [m for _, s, m in findings if s == "error"]
 
-        for wanted in ("ok", "warn"):
-            for backend, status, message in findings:
-                if status == wanted:
-                    self.active_backend = backend if status == "ok" else None
-                    if broken_notes:
-                        message += "\n[Fallback backend error] " + "; ".join(broken_notes)
-                    return status, message
+        # First ok wins, else first warn; active_backend is set for both (B9).
+        picked = self.pick_finding(findings)
+        if picked is not None:
+            status, message = picked
+            if broken_notes:
+                message += "\n[Fallback backend error] " + "; ".join(broken_notes)
+            return status, message
 
         if findings:
             return "error", "\n".join(m for _, _, m in findings)

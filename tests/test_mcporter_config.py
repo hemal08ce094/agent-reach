@@ -83,7 +83,7 @@ def test_missing_explicit_config_fails_closed(monkeypatch, tmp_path):
         inspect_mcporter_config()
 
 
-def test_symlink_config_is_rejected(monkeypatch, tmp_path):
+def test_symlink_config_is_followed_read_only(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "real.json"
     _write_config(target, {"exa": {"baseUrl": "https://example.test"}})
@@ -94,11 +94,11 @@ def test_symlink_config_is_rejected(monkeypatch, tmp_path):
     except OSError:
         pytest.skip("symlinks are unavailable on this platform")
 
-    with pytest.raises(McporterConfigError, match="symlink"):
-        inspect_mcporter_config()
+    # Doctor's read is read-only, so dotfile-managed (symlinked) configs work.
+    assert inspect_mcporter_config().server_names == {"exa"}
 
 
-def test_ancestor_symlink_config_is_rejected(monkeypatch, tmp_path):
+def test_ancestor_symlink_config_is_followed_read_only(monkeypatch, tmp_path):
     real_root = tmp_path / "real-root"
     _write_config(
         real_root / "config" / "mcporter.json",
@@ -114,15 +114,16 @@ def test_ancestor_symlink_config_is_rejected(monkeypatch, tmp_path):
         str(linked_root / "config" / "mcporter.json"),
     )
 
-    with pytest.raises(McporterConfigError, match="cannot be read safely"):
-        inspect_mcporter_config()
+    assert inspect_mcporter_config().server_names == {"exa"}
 
 
 def test_invalid_json_fails_closed(monkeypatch, tmp_path):
+    # An explicit MCPORTER_CONFIG still fails closed; malformed home/project
+    # layers are skipped like mcporter does (tests/test_fork_channels_mcporter.py).
     monkeypatch.chdir(tmp_path)
-    config_path = tmp_path / "config" / "mcporter.json"
-    config_path.parent.mkdir()
+    config_path = tmp_path / "explicit.json"
     config_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setenv("MCPORTER_CONFIG", str(config_path))
 
     with pytest.raises(McporterConfigError, match="UTF-8 JSON"):
         inspect_mcporter_config()

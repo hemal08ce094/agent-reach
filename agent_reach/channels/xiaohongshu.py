@@ -22,7 +22,11 @@ from agent_reach.utils.paths import (
 )
 
 from .base import Channel
-from .mcporter import McporterConfigError, inspect_mcporter_config
+from .mcporter import (
+    McporterConfigError,
+    inspect_mcporter_config,
+    skipped_layers_note,
+)
 
 _MCP_ENDPOINT = "http://localhost:18060/mcp"
 _MCP_INSTALL_URL = "https://github.com/xpzouying/xiaohongshu-mcp"
@@ -40,9 +44,10 @@ def _mcp_service_reachable(timeout: int = 3) -> bool:
     req = urllib.request.Request(_MCP_ENDPOINT, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        opener.open(req, timeout=timeout)
-        return True
-    except urllib.error.HTTPError:
+        with opener.open(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as exc:
+        exc.close()
         return True  # 405/404 etc. — service is alive
     except Exception:
         return False
@@ -57,17 +62,39 @@ def format_xhs_result(data):
     if isinstance(data, list):
         return [_clean_note(item) for item in data]
     if isinstance(data, dict):
-        # Handle search_feeds wrapper: {"items": [...]} or {"data": {"items": [...]}}
-        items = None
-        if "items" in data:
-            items = data["items"]
-        elif "data" in data and isinstance(data.get("data"), dict):
-            items = data["data"].get("items") or data["data"].get("notes")
-        if items and isinstance(items, list):
-            return [_clean_note(item) for item in items]
-        # Single note
-        return _clean_note(data)
+        # The MCP CLI emits {"feeds": [...]}; HTTP adds a "data" envelope.
+        payload = data.get("data")
+        if not isinstance(payload, dict):
+            payload = data
+        for key in ("items", "notes", "feeds"):
+            if key in payload and isinstance(payload[key], list):
+                return [_clean_note(item) for item in payload[key]]
+        return _clean_note(payload)
     return data
+
+
+# Public xiaohongshu-mcp uses camelCase; keep the formatter's existing
+# snake_case output contract and support older snake_case backends as well.
+_XHS_FIELD_ALIASES = {
+    "noteCard": "note_card", "noteId": "note_id", "xsecToken": "xsec_token",
+    "displayTitle": "title", "userId": "user_id", "nickName": "nick_name",
+    "interactInfo": "interact_info", "likedCount": "liked_count",
+    "collectedCount": "collected_count", "commentCount": "comment_count",
+    "sharedCount": "share_count", "imageList": "image_list",
+    "urlDefault": "url_default", "userInfo": "user_info",
+    "likeCount": "like_count", "subCommentCount": "sub_comment_count",
+}
+
+
+def _normalize_xhs_fields(value):
+    """Add known aliases without mutating input or replacing canonical fields."""
+    if not isinstance(value, dict):
+        return value
+    result = dict(value)
+    for alias, canonical in _XHS_FIELD_ALIASES.items():
+        if alias in value and canonical not in result:
+            result[canonical] = value[alias]
+    return result
 
 
 def _clean_note(note):
@@ -75,8 +102,11 @@ def _clean_note(note):
     if not isinstance(note, dict):
         return note
 
-    # Some responses nest the note under "note_card" or "note"
-    inner = note.get("note_card") or note.get("note") or note
+    note = _normalize_xhs_fields(note)
+    # Search identity is on the feed, while content is inside noteCard.
+    inner = _normalize_xhs_fields(note.get("note_card") or note.get("note") or note)
+    if not isinstance(inner, dict):
+        return {}
 
     result = {}
 
@@ -84,20 +114,24 @@ def _clean_note(note):
     for key in ("id", "note_id", "xsec_token", "title", "desc", "type", "time"):
         if key in inner:
             result[key] = inner[key]
+        elif key in ("id", "note_id", "xsec_token") and key in note:
+            result[key] = note[key]
 
     # Content (may be in desc or content)
     if "content" in inner and "desc" not in result:
         result["content"] = inner["content"]
 
     # Author
-    user = inner.get("user") or inner.get("author")
+    user = _normalize_xhs_fields(inner.get("user") or inner.get("author"))
     if isinstance(user, dict):
         result["user"] = {
             k: user[k] for k in ("nickname", "user_id", "nick_name") if k in user
         }
 
     # Engagement metrics
-    interact = inner.get("interact_info") or inner.get("note_interact_info") or {}
+    interact = _normalize_xhs_fields(
+        inner.get("interact_info") or inner.get("note_interact_info") or {}
+    )
     if isinstance(interact, dict):
         for key in ("liked_count", "collected_count", "comment_count", "share_count"):
             if key in interact:
@@ -109,9 +143,12 @@ def _clean_note(note):
 
     # Images — just URLs
     images = inner.get("image_list") or inner.get("images_list") or []
+    if not images and isinstance(inner.get("cover"), dict):
+        images = [inner["cover"]]
     if isinstance(images, list):
         urls = []
         for img in images:
+            img = _normalize_xhs_fields(img)
             if isinstance(img, dict):
                 url = img.get("url") or img.get("url_default") or img.get("original")
                 if url:
@@ -134,7 +171,9 @@ def _clean_note(note):
             result["tags"] = tag_names
 
     # Comments (if present, e.g. from get_feed_detail with comments)
-    comments = inner.get("comments") or []
+    comments = inner.get("comments") or note.get("comments") or []
+    if isinstance(comments, dict):
+        comments = comments.get("list", [])
     if isinstance(comments, list) and comments:
         result["comments"] = [_clean_comment(c) for c in comments]
 
@@ -145,10 +184,11 @@ def _clean_comment(comment):
     """Extract useful fields from a comment."""
     if not isinstance(comment, dict):
         return comment
+    comment = _normalize_xhs_fields(comment)
     result = {}
     if "content" in comment:
         result["content"] = comment["content"]
-    user = comment.get("user_info") or comment.get("user")
+    user = _normalize_xhs_fields(comment.get("user_info") or comment.get("user"))
     if isinstance(user, dict):
         result["user"] = user.get("nickname") or user.get("nick_name", "")
     for key in ("like_count", "sub_comment_count"):
@@ -189,11 +229,10 @@ class XiaoHongShuChannel(Channel):
                 continue  # not installed — not a candidate right now
             findings.append((backend, *result))
 
-        for wanted in ("ok", "warn"):
-            for backend, status, message in findings:
-                if status == wanted:
-                    self.active_backend = backend if status == "ok" else None
-                    return status, message
+        # First ok wins, else first warn; active_backend is set for both (B9).
+        picked = self.pick_finding(findings)
+        if picked is not None:
+            return picked
 
         if findings:  # only broken candidates left
             return "error", "\n".join(m for _, _, m in findings)
@@ -250,6 +289,9 @@ class XiaoHongShuChannel(Channel):
                 "xiaohongshu entry and editor imports were not expanded, so Doctor has "
                 "not verified the connection."
             )
+        note = skipped_layers_note(inspection)
+        if note:
+            return "warn", note
         return "warn", (
             "xiaohongshu-mcp service is running but not connected to mcporter. Run:\n"
             f"  mcporter config add xiaohongshu {_MCP_ENDPOINT} --scope home"
@@ -263,13 +305,14 @@ class XiaoHongShuChannel(Channel):
         try:
             payload = read_small_text_no_follow(
                 cookie_path,
+                follow_symlinks=True,
                 max_bytes=_MAX_XHS_COOKIE_BYTES,
             )
         except PrivatePathError as exc:
             return "warn", (
                 f"xhs-cli is installed, but cookies.json cannot be read safely: {exc}."
             )
-        except OSError:
+        except (OSError, UnicodeError):
             return "warn", (
                 "xhs-cli is installed, but cookies.json cannot be read safely; "
                 "Doctor did not run `xhs status`, which auto-extracts browser cookies."
@@ -287,8 +330,12 @@ class XiaoHongShuChannel(Channel):
         if not isinstance(data, dict) or not data.get("a1"):
             return self._xhs_cookie_hint()
         saved_at = data.get("saved_at")
-        if isinstance(saved_at, (int, float)) and (
-            time.time() - saved_at > _XHS_COOKIE_TTL_SECONDS
+        # saved_at <= 0 means "unknown", not stale.
+        if (
+            isinstance(saved_at, (int, float))
+            and not isinstance(saved_at, bool)
+            and saved_at > 0
+            and time.time() - saved_at > _XHS_COOKIE_TTL_SECONDS
         ):
             return "warn", (
                 "xhs-cli is installed, but the saved cookies are over 7 days old; Doctor "

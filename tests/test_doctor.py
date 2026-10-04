@@ -314,7 +314,7 @@ def test_real_doctor_path_is_zero_write_and_never_runs_risky_status_commands(
     assert all(Path(call[0]).name != "mcporter" for call in calls)
     payload = json.loads(capsys.readouterr().out)
     assert payload["github"]["status"] == "warn"
-    assert payload["github"]["active_backend"] is None
+    assert payload["github"]["active_backend"] == "gh CLI"  # B9: set on warn too
     for channel_name in (
         "twitter",
         "reddit",
@@ -323,4 +323,5 @@ def test_real_doctor_path_is_zero_write_and_never_runs_risky_status_commands(
         "xiaohongshu",
     ):
         assert payload[channel_name]["status"] == "warn"
-        assert payload[channel_name]["active_backend"] is None
+        # B9: the warn-level backend is reported, but status stays "warn".
+        assert payload[channel_name]["active_backend"] in payload[channel_name]["backends"]

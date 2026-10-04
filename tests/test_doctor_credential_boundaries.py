@@ -30,7 +30,7 @@ def test_twitter_doctor_does_not_start_cli_without_explicit_credentials(
     status, message = channel.check()
 
     assert status == "warn"
-    assert channel.active_backend is None
+    assert channel.active_backend == "twitter-cli"  # B9: set on warn too
     assert "Cookie-Editor" in message
     assert "browser" not in message or "never" in message
 
@@ -71,7 +71,7 @@ def test_reddit_doctor_does_not_create_or_refresh_missing_credentials(
     status, message = channel.check()
 
     assert status == "warn"
-    assert channel.active_backend is None
+    assert channel.active_backend == "rdt-cli"  # B9: set on warn too
     assert "Cookie-Editor" in message
     assert not (isolated_home / ".config" / "rdt-cli").exists()
 
@@ -129,7 +129,7 @@ def test_xhs_doctor_does_not_create_or_extract_missing_cookies(
     status, message = channel.check()
 
     assert status == "warn"
-    assert channel.active_backend is None
+    assert channel.active_backend == "xhs-cli (xiaohongshu-cli)"  # B9: set on warn too
     assert "Cookie-Editor" in message
     assert not (isolated_home / ".xiaohongshu-cli").exists()
 

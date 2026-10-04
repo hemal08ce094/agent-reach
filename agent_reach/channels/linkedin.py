@@ -4,7 +4,11 @@
 import shutil
 
 from .base import Channel
-from .mcporter import McporterConfigError, inspect_mcporter_config
+from .mcporter import (
+    McporterConfigError,
+    inspect_mcporter_config,
+    skipped_layers_note,
+)
 
 _LINKEDIN_SERVER_NAMES = {
     "linkedin",
@@ -46,6 +50,8 @@ class LinkedInChannel(Channel):
         except McporterConfigError as exc:
             return "error", f"mcporter config check failed: {exc}"
         if inspection.server_names & _LINKEDIN_SERVER_NAMES:
+            # Configured: this is the backend that serves the channel (B9).
+            self.active_backend = self.backends[0]
             if not shutil.which("uvx"):
                 return "warn", (
                     "LinkedIn MCP is in the mcporter config, but uvx is not installed, "
@@ -63,6 +69,9 @@ class LinkedInChannel(Channel):
                 "enables editor imports, which Doctor does not expand to avoid reading "
                 "more credentials, so it is unverified."
             )
+        note = skipped_layers_note(inspection)
+        if note:
+            return "warn", note
         return "off", (
             "mcporter is installed but LinkedIn MCP is not configured. Run:\n"
             f"  Install uv/uvx first: {_UV_INSTALL_URL}\n"

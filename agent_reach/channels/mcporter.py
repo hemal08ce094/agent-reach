@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from agent_reach.utils.paths import (
 
 _MAX_CONFIG_BYTES = 1024 * 1024
 _MISSING = object()
+_JSONC_COMMENTS = re.compile(r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*[\s\S]*?\*/')
+_JSONC_TRAILING_COMMAS = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[}\]])')
 
 
 class McporterConfigError(ValueError):
@@ -27,6 +30,19 @@ class McporterConfigInspection:
     server_names: frozenset[str]
     source: str | None
     imports_unchecked: bool = False
+    #: Non-explicit layers that could not be parsed and were ignored, as
+    #: ``"<source>: <reason>"`` strings (mcporter warns and ignores them too).
+    skipped_layers: tuple[str, ...] = ()
+
+
+def skipped_layers_note(inspection: McporterConfigInspection) -> str:
+    """Human-readable note about ignored config layers ("" when none)."""
+    if not inspection.skipped_layers:
+        return ""
+    return (
+        "Some mcporter config layers could not be parsed and were ignored "
+        "(mcporter ignores them as well): " + "; ".join(inspection.skipped_layers)
+    )
 
 
 def inspect_mcporter_config(
@@ -46,40 +62,58 @@ def inspect_mcporter_config(
     if not selected_layers:
         return McporterConfigInspection(frozenset(), None)
 
-    names = set()
+    names: set[str] = set()
     imports_unchecked = False
     sources = []
+    skipped = []
     for config_path, source in selected_layers:
-        payload = _read_config_object(config_path)
-        servers = payload.get("mcpServers")
-        if not isinstance(servers, dict):
-            raise McporterConfigError("mcporter config is missing the mcpServers mapping")
-
-        for name, definition in servers.items():
-            if not isinstance(name, str) or not name.strip():
-                raise McporterConfigError("mcporter config contains an invalid server name")
-            if not isinstance(definition, dict):
-                raise McporterConfigError("mcporter server definition must be a mapping")
-            names.add(name.casefold())
-
-        imports = payload.get("imports", _MISSING)
-        if imports is _MISSING:
-            # mcporter defaults to importing supported editor configs when the
-            # key is omitted. Doctor intentionally does not open those files.
-            imports_unchecked = True
-        elif not isinstance(imports, list) or not all(
-            isinstance(item, str) for item in imports
-        ):
-            raise McporterConfigError("mcporter imports must be a list of strings")
-        elif imports:
-            imports_unchecked = True
+        try:
+            payload = _read_config_object(config_path)
+            layer_names, layer_imports_unchecked = _inspect_layer(payload)
+        except _LayerSyntaxError as exc:
+            if source == "explicit":
+                raise McporterConfigError(str(exc)) from exc
+            # mcporter only warns about a malformed home/project layer and
+            # treats it as empty; do the same instead of failing every channel.
+            skipped.append(f"{source} ({config_path}): {exc}")
+            continue
+        names.update(layer_names)
+        imports_unchecked = imports_unchecked or layer_imports_unchecked
         sources.append(source)
 
     return McporterConfigInspection(
         frozenset(names),
-        "+".join(sources),
+        "+".join(sources) or None,
         imports_unchecked=imports_unchecked,
+        skipped_layers=tuple(skipped),
     )
+
+
+class _LayerSyntaxError(McporterConfigError):
+    """A layer that was read safely but is not a valid mcporter config."""
+
+
+def _inspect_layer(payload: dict) -> tuple[set[str], bool]:
+    servers = payload.get("mcpServers")
+    if not isinstance(servers, dict):
+        raise _LayerSyntaxError("mcporter config is missing the mcpServers mapping")
+
+    names = set()
+    for name, definition in servers.items():
+        if not isinstance(name, str) or not name.strip():
+            raise _LayerSyntaxError("mcporter config contains an invalid server name")
+        if not isinstance(definition, dict):
+            raise _LayerSyntaxError("mcporter server definition must be a mapping")
+        names.add(name.casefold())
+
+    imports = payload.get("imports", _MISSING)
+    if imports is _MISSING:
+        # mcporter defaults to importing supported editor configs when the
+        # key is omitted. Doctor intentionally does not open those files.
+        return names, True
+    if not isinstance(imports, list) or not all(isinstance(item, str) for item in imports):
+        raise _LayerSyntaxError("mcporter imports must be a list of strings")
+    return names, bool(imports)
 
 
 def _select_config_layers(
@@ -111,6 +145,7 @@ def _read_config_object(config_path: Path) -> dict:
     try:
         raw = read_small_text_no_follow(
             config_path,
+            follow_symlinks=True,
             max_bytes=_MAX_CONFIG_BYTES,
         )
     except PrivatePathError as exc:
@@ -122,12 +157,40 @@ def _read_config_object(config_path: Path) -> dict:
     if raw is None:
         raise McporterConfigError("mcporter config file does not exist")
     try:
-        payload = json.loads(raw)
+        payload = _parse_config_json(raw)
     except json.JSONDecodeError as exc:
-        raise McporterConfigError("mcporter config is not valid UTF-8 JSON") from exc
+        raise _LayerSyntaxError("mcporter config is not valid UTF-8 JSON") from exc
     if not isinstance(payload, dict):
-        raise McporterConfigError("mcporter config top level must be a mapping")
+        raise _LayerSyntaxError("mcporter config top level must be a mapping")
     return payload
+
+
+def _parse_config_json(raw: str):
+    """Accept mcporter's JSONC (comments, trailing commas), keeping JSON validation.
+
+    mcporter parses every config layer with ``jsonc-parser`` and
+    ``allowTrailingComma``. String tokens win over comment delimiters so URLs
+    and escapes survive; comments become whitespace so they cannot join
+    otherwise invalid tokens.
+    """
+    without_comments = _JSONC_COMMENTS.sub(
+        lambda match: match.group(1) if match.group(1) is not None else " " * len(match.group()),
+        raw,
+    )
+
+    def trailing_comma(match):
+        if match.group(1) is not None:
+            return match.group(1)
+        previous = match.start() - 1
+        while previous >= 0 and without_comments[previous].isspace():
+            previous -= 1
+        # Empty containers and missing values are not trailing-comma syntax.
+        if previous < 0 or without_comments[previous] in "[{,:":
+            return ","
+        return ""
+
+    normalized = _JSONC_TRAILING_COMMAS.sub(trailing_comma, without_comments)
+    return json.loads(normalized)
 
 
 def configured_server_names(output: str) -> set[str]:

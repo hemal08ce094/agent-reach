@@ -44,17 +44,18 @@ def _literal_ip_address(
     return ipaddress.IPv4Address(packed)
 
 
+def _has_unsafe_url_characters(candidate: str) -> bool:
+    """Backslashes, whitespace and control characters enable host confusion."""
+    return "\\" in candidate or any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in candidate
+    )
+
+
 def normalize_public_http_url(url: str) -> str:
     """Normalize a URL or reject targets that are not clearly public HTTP(S)."""
     candidate = str(url or "").strip()
-    if (
-        not candidate
-        or "\\" in candidate
-        or any(
-            character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
-            for character in candidate
-        )
-    ):
+    if not candidate or _has_unsafe_url_characters(candidate):
         raise ValueError("only public HTTP(S) URLs are allowed")
     if "://" not in candidate:
         candidate = f"https://{candidate}"
@@ -63,9 +64,20 @@ def normalize_public_http_url(url: str) -> str:
         parsed = urlsplit(candidate)
         host = (parsed.hostname or "").lower().rstrip(".")
         # Accessing the port rejects malformed or out-of-range authorities.
-        _ = parsed.port
+        port = parsed.port
     except (TypeError, ValueError):
         raise ValueError("only public HTTP(S) URLs are allowed") from None
+
+    if host and not host.isascii():
+        # Validate the host the network stack will really contact: IDNA maps
+        # fullwidth digits and lookalike letters (``１２７.０.０.１``,
+        # ``ⓛⓞⓒⓐⓛⓗⓞⓢⓣ``) onto ASCII before resolution.
+        try:
+            host = host.encode("idna").decode("ascii").lower().rstrip(".")
+        except UnicodeError:
+            raise ValueError("only public HTTP(S) URLs are allowed") from None
+        netloc = host if port is None else f"{host}:{port}"
+        parsed = parsed._replace(netloc=netloc)
 
     literal_address = _literal_ip_address(host)
     if (
@@ -101,10 +113,19 @@ def host_matches(url: str, *domains: str) -> bool:
 
     Only HTTP(S) URLs without userinfo are accepted. Using ``hostname`` rather
     than substring matching prevents lookalikes such as ``x.com.evil.test`` and
-    userinfo disguises such as ``x.com@evil.test``.
+    userinfo disguises such as ``x.com@evil.test``. Backslashes, whitespace and
+    control characters are rejected (``https://evil.test\\.x.com/`` is parsed
+    by browsers as host ``evil.test``). Scheme-less input such as
+    ``x.com/user`` is treated as ``https://x.com/user``, matching
+    :func:`normalize_public_http_url`.
     """
+    candidate = str(url or "").strip()
+    if not candidate or _has_unsafe_url_characters(candidate):
+        return False
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
     try:
-        parsed = urlsplit(url)
+        parsed = urlsplit(candidate)
         host = (parsed.hostname or "").lower().rstrip(".")
         # ``hostname`` is permissive: malformed or out-of-range ports only
         # raise when ``port`` is accessed. Force that validation here so

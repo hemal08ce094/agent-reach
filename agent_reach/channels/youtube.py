@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """YouTube — check if yt-dlp is available with JS runtime."""
 
+import os
 import re
+import shlex
 import shutil
+import sys
+from pathlib import Path
+from typing import List, Optional
 
 from agent_reach.probe import probe_command
 from agent_reach.utils.paths import (
     PrivatePathError,
     get_ytdlp_config_path,
+    home_dir,
     read_small_text_no_follow,
-    render_ytdlp_fix_command,
 )
 
 from .base import Channel
@@ -24,16 +29,87 @@ def _parse_ytdlp_version(version: str):
     return tuple(map(int, match.groups())) if match else None
 
 
+def ytdlp_user_config_candidates() -> List[Path]:
+    """Return yt-dlp's user config candidates in yt-dlp's own lookup order.
+
+    Mirrors ``yt_dlp.options._load_from_config_dirs`` over
+    ``get_user_config_dirs``: for each of ``$XDG_CONFIG_HOME/yt-dlp`` (default
+    ``~/.config/yt-dlp``), ``%APPDATA%/yt-dlp`` and ``~/.yt-dlp`` it tries
+    ``<parent>/yt-dlp.conf`` (plus ``yt-dlp.conf.txt`` for the dot-dir),
+    ``<dir>/config`` and ``<dir>/config.txt``. yt-dlp reads only the FIRST
+    existing file, so Doctor must inspect exactly that one.
+    """
+    home = home_dir()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    config_dirs = [Path(xdg) / "yt-dlp" if xdg else home / ".config" / "yt-dlp"]
+    appdata = os.environ.get("APPDATA") or os.environ.get("appdata")
+    if appdata:
+        config_dirs.append(Path(appdata) / "yt-dlp")
+    config_dirs.append(home / ".yt-dlp")
+
+    candidates: List[Path] = []
+    for config_dir in config_dirs:
+        parent = config_dir.parent
+        candidates.append(parent / "yt-dlp.conf")
+        if config_dir.name.startswith("."):
+            candidates.append(parent / "yt-dlp.conf.txt")
+        candidates.append(config_dir / "config")
+        candidates.append(config_dir / "config.txt")
+    return candidates
+
+
+def find_ytdlp_user_config() -> Optional[Path]:
+    """Return the user config file yt-dlp actually loads, or None."""
+    for candidate in ytdlp_user_config_candidates():
+        # lexists: a (possibly dangling) symlink is still the file yt-dlp
+        # would try first. Doctor reads it through the link (read-only).
+        if os.path.lexists(candidate) and not os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def _has_js_runtime_config(config_path) -> bool:
-    """Return whether yt-dlp config explicitly enables a JS runtime."""
+    """Return whether yt-dlp config enables a JS runtime outside comments.
+
+    yt-dlp parses config files with ``shlex.split(comments=True)``; doing the
+    same means ``# --js-runtimes node`` no longer counts (#715). Symlinked
+    (dotfile-managed) configs are followed, as yt-dlp itself does.
+    """
     try:
         payload = read_small_text_no_follow(
             config_path,
+            follow_symlinks=True,
             max_bytes=1024 * 1024,
+            encoding="utf-8-sig",
         )
-        return payload is not None and "--js-runtimes" in payload
-    except (OSError, UnicodeError, PrivatePathError):
+        if payload is None or "--js-runtimes" not in payload:
+            return False
+        tokens = shlex.split(payload, comments=True)
+    except (OSError, UnicodeError, PrivatePathError, ValueError):
         return False
+    # Substring per token: quoted alias expansions can carry the flag too.
+    return any("--js-runtimes" in token for token in tokens)
+
+
+def render_ytdlp_fix_command_for(config_path: Path) -> str:
+    """Return an OS-appropriate command appending ``--js-runtimes node`` to *config_path*."""
+    if sys.platform == "win32":
+        return (
+            f"$cfg = '{config_path}'\n"
+            "New-Item -ItemType Directory -Force -Path (Split-Path $cfg) | Out-Null\n"
+            "if (-not (Test-Path $cfg) -or -not (Select-String -Path $cfg -Pattern '--js-runtimes' -Quiet)) {\n"
+            "  Add-Content -Path $cfg -Value '--js-runtimes node'\n"
+            "}"
+        )
+    config_dir = shlex.quote(str(config_path.parent))
+    config_file = shlex.quote(str(config_path))
+    return (
+        f"mkdir -p {config_dir} && "
+        "{ "
+        f"grep -qxF -- '--js-runtimes node' {config_file} 2>/dev/null || "
+        f"printf '%s\\n' '--js-runtimes node' >> {config_file}; "
+        "}"
+    )
 
 
 class YouTubeChannel(Channel):
@@ -77,7 +153,9 @@ class YouTubeChannel(Channel):
         # Deno works out of the box; Node.js requires explicit config
         has_deno = shutil.which("deno")
         if not has_deno:
-            ytdlp_config = get_ytdlp_config_path()
+            # Inspect the file yt-dlp really loads (first existing candidate);
+            # with none, point the fix at the default XDG location.
+            ytdlp_config = find_ytdlp_user_config() or get_ytdlp_config_path()
             if not _has_js_runtime_config(ytdlp_config):
                 version = _parse_ytdlp_version(probe.output)
                 if version is None:
@@ -92,10 +170,18 @@ class YouTubeChannel(Channel):
                         f"  {_YTDLP_UPGRADE_COMMAND}"
                     )
                 return "warn", (
-                    f"yt-dlp is installed but no JS runtime is configured. Run:\n  {render_ytdlp_fix_command()}"
+                    "yt-dlp is installed but no JS runtime is configured "
+                    f"(checked {ytdlp_config}). Run:\n"
+                    f"  {render_ytdlp_fix_command_for(ytdlp_config)}"
                 )
         # Surface transcription readiness so `doctor` reports it.
-        msg = "Can extract video info and subtitles"
+        # NOTE: this only proves the local toolchain; video access and subtitles
+        # are NOT live-verified (a bot/sign-in challenge can still block real
+        # fetches), so the wording must not promise more (#766).
+        msg = (
+            "yt-dlp and its JS runtime are ready; video access and subtitles "
+            "were not verified live"
+        )
         if config is not None:
             providers = []
             if config.is_configured("groq_whisper"):

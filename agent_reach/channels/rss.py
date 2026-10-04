@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 """RSS — check if feedparser is available."""
 
+from urllib.parse import urlsplit
+
 from .base import Channel
+
+# Path segments that conventionally serve a feed (e.g. /feed, /blog/rss).
+_FEED_SEGMENTS = {"feed", "feeds", "rss", "atom", "rss2"}
+# ``<stem>.xml`` names that conventionally denote a feed document.
+_FEED_STEMS = {"feed", "feeds", "rss", "atom", "index", "rss2"}
 
 
 class RSSChannel(Channel):
@@ -11,7 +18,33 @@ class RSSChannel(Channel):
     tier = 0
 
     def can_handle(self, url: str) -> bool:
-        return any(x in url.lower() for x in ["/feed", "/rss", ".xml", "atom"])
+        """Match feed-shaped HTTP(S) URLs by path segment / suffix, not substring.
+
+        ``/wiki/Anatomy``, ``/issues/feedback`` and ``sitemap.xml`` are not
+        feeds; ``/feed``, ``/blog/rss/``, ``/atom.xml`` and ``/news.rss`` are.
+        """
+        try:
+            parsed = urlsplit(str(url or "").strip())
+        except ValueError:
+            return False
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return False
+        segments = [seg.lower() for seg in parsed.path.split("/") if seg]
+        if not segments:
+            return False
+        last = segments[-1]
+        if "sitemap" in last:
+            return False
+        if any(seg in _FEED_SEGMENTS for seg in segments):
+            return True
+        if last.endswith((".rss", ".atom", ".rdf")):
+            return True
+        if last.endswith(".xml"):
+            stem = last[: -len(".xml")]
+            return stem in _FEED_STEMS or any(
+                token in stem for token in ("rss", "atom", "feed")
+            )
+        return False
 
     def check(self, config=None):
         try:

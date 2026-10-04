@@ -38,6 +38,9 @@ class OpenCLISiteChannel(Channel):
         if st.broken:
             return "error", st.hint
 
+        # Installed and runnable: OpenCLI is the backend serving this channel,
+        # even though Doctor cannot verify the login (B9: set on warn too).
+        self.active_backend = self.backends[0]
         if st.ready:
             return "warn", (
                 f"OpenCLI bridge connected, but the {self.description} login and real "

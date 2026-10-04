@@ -54,6 +54,7 @@ def _saved_github_host_configured() -> bool:
     try:
         raw = read_small_text_no_follow(
             hosts_path,
+            follow_symlinks=True,
             max_bytes=_MAX_HOSTS_BYTES,
         )
     except (OSError, PrivatePathError, UnicodeError) as exc:
@@ -124,6 +125,10 @@ class GitHubChannel(Channel):
         if not probe.ok:
             detail = probe.hint or probe.status
             return "error", f"gh CLI version check failed: {detail}"
+
+        # gh runs: it is the backend serving GitHub even though auth is not
+        # verified live (B9: active_backend is set on warn too).
+        self.active_backend = self.backends[0]
 
         try:
             configured = _explicit_github_credentials(

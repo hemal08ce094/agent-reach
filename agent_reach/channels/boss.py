@@ -33,6 +33,7 @@ search reports `AUTH_EXPIRED`. Layer 4 asks the CDP browser itself
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -42,12 +43,15 @@ import urllib.request
 from urllib.parse import urlparse
 
 from agent_reach.probe import probe_command
-from agent_reach.utils.url import host_matches
+from agent_reach.utils.url import domain_matches, host_matches
 
 from .base import Channel
 
 _CDP_URL = "http://localhost:9222"
 _CDP_TIMEOUT = 5
+# Upper bound for one reassembled WebSocket message (Storage.getCookies of a
+# busy profile is well under this).
+_WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 def _chrome_launch_command(system: str | None = None) -> str:
@@ -70,7 +74,9 @@ def _chrome_launch_command(system: str | None = None) -> str:
             "Start-Process chrome.exe -ArgumentList "
             "'--remote-debugging-address=127.0.0.1',"
             "'--remote-debugging-port=9222',"
-            '"--user-data-dir=$env:USERPROFILE\\.boss-chrome-profile",'
+            # Start-Process joins ArgumentList items without the outer quotes,
+            # so the path keeps embedded quotes for profiles with spaces (#771).
+            '"--user-data-dir=`"$env:USERPROFILE\\.boss-chrome-profile`"",'
             "'https://www.zhipin.com/web/geek/job'"
         )
     return (
@@ -127,52 +133,98 @@ def _security_check_blocks_all(pages) -> bool:
 _WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-def _read_ws_text_frame(sock: socket.socket, initial: bytes = b""):
-    """Read the next text frame and return (payload, leftover).
+def _recv_exact(sock: socket.socket, buf: bytes, size: int):
+    """Grow *buf* to at least *size* bytes; None when the peer disconnects."""
+    while len(buf) < size:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
 
-    leftover holds extra bytes this recv picked up that belong to later frames; the
-    caller should pass it back as ``initial`` for the next frame (one recv can return
-    several frames). Returns (None, leftover) on a close frame or disconnect.
-    Ping/pong frames are ignored.
+
+def _read_ws_text_frame(sock: socket.socket, initial: bytes = b""):
+    """Read the next complete data message and return (payload, leftover).
+
+    Fragmented messages (a text/binary frame without FIN followed by
+    continuation frames) are reassembled up to the final FIN frame. leftover
+    holds extra bytes this recv picked up that belong to later frames; the
+    caller should pass it back as ``initial`` for the next message (one recv
+    can return several frames). Returns (None, leftover) on a close frame,
+    disconnect, protocol error or an oversized message. Ping/pong frames are
+    ignored, including when interleaved between fragments.
     """
     buf = initial
+    message = b""
+    in_message = False
     while True:
-        while len(buf) < 2:
-            chunk = sock.recv(4096)
-            if not chunk:
-                return None, buf
-            buf += chunk
+        grown = _recv_exact(sock, buf, 2)
+        if grown is None:
+            return None, buf
+        buf = grown
+        fin = bool(buf[0] & 0x80)
         opcode = buf[0] & 0x0F
+        masked = bool(buf[1] & 0x80)
         length = buf[1] & 0x7F
         header_len = 2
         if length == 126:
-            while len(buf) < header_len + 2:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    return None, buf
-                buf += chunk
+            grown = _recv_exact(sock, buf, header_len + 2)
+            if grown is None:
+                return None, buf
+            buf = grown
             length = struct.unpack(">H", buf[header_len:header_len + 2])[0]
             header_len += 2
         elif length == 127:
-            while len(buf) < header_len + 8:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    return None, buf
-                buf += chunk
+            grown = _recv_exact(sock, buf, header_len + 8)
+            if grown is None:
+                return None, buf
+            buf = grown
             length = struct.unpack(">Q", buf[header_len:header_len + 8])[0]
             header_len += 8
-        while len(buf) < header_len + length:
-            chunk = sock.recv(4096)
-            if not chunk:
+        mask = b""
+        if masked:
+            grown = _recv_exact(sock, buf, header_len + 4)
+            if grown is None:
                 return None, buf
-            buf += chunk
+            buf = grown
+            mask = buf[header_len:header_len + 4]
+            header_len += 4
+        if len(message) + length > _WS_MAX_MESSAGE_BYTES:
+            return None, b""
+        grown = _recv_exact(sock, buf, header_len + length)
+        if grown is None:
+            return None, buf
+        buf = grown
         payload = buf[header_len:header_len + length]
         buf = buf[header_len + length:]
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
         if opcode == 0x8:  # close
             return None, buf
-        if opcode in (0x1, 0x2, 0x0):  # text / binary / continuation
-            return payload, buf
-        # ping(0x9)/pong(0xA) etc.: ignore and read the next frame
+        if opcode in (0x1, 0x2):  # first frame of a text / binary message
+            if in_message:
+                return None, buf  # protocol error: new message inside a fragment
+            message = payload
+            in_message = True
+        elif opcode == 0x0:  # continuation
+            if not in_message:
+                return None, buf  # protocol error: continuation without a start
+            message += payload
+        else:
+            continue  # ping(0x9)/pong(0xA) etc.: ignore and read the next frame
+        if fin:
+            return message, buf
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Only localhost / loopback literals may carry the CDP WebSocket."""
+    normalized = host.lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _send_ws_text(sock: socket.socket, text: str) -> None:
@@ -202,10 +254,20 @@ def _cdp_zhipin_login_cookie() -> bool | None:
     ws_url = (version or {}).get("webSocketDebuggerUrl")
     if not ws_url:
         return None
-    parsed = urlparse(ws_url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 80
+    try:
+        parsed = urlparse(ws_url)
+        host = parsed.hostname or ""
+        port = parsed.port or 80
+    except (TypeError, ValueError):
+        return None
+    # /json/version is attacker-influenced data from whatever answers on the
+    # port: never let it point the probe (and the browser's cookies) at a
+    # non-loopback host.
+    if parsed.scheme.lower() != "ws" or not _is_loopback_host(host):
+        return None
     path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
     try:
         with socket.create_connection((host, port), timeout=_CDP_TIMEOUT) as sock:
             sock.settimeout(_CDP_TIMEOUT)
@@ -255,7 +317,11 @@ def _cdp_zhipin_login_cookie() -> bool | None:
                 if "result" not in data:
                     return None
                 for cookie in data["result"].get("cookies", []):
-                    if cookie.get("name") == "wt2" and "zhipin" in cookie.get("domain", ""):
+                    if not isinstance(cookie, dict):
+                        continue
+                    if cookie.get("name") == "wt2" and domain_matches(
+                        str(cookie.get("domain") or ""), "zhipin.com"
+                    ):
                         return True
                 return False
             return None
