@@ -25,7 +25,7 @@
     error: { glyph: "×", label: "Error", group: "attention" },
     timeout: { glyph: "!", label: "Timed out", group: "attention" },
     off: { glyph: "○", label: "Not set up", group: "setup" },
-    pending: { glyph: "·", label: "Checking", group: "pending" },
+    pending: { glyph: "•", label: "Checking", group: "pending" },
   };
   const GROUPS = [
     ["attention", "Needs attention"],
