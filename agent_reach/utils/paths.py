@@ -179,6 +179,11 @@ def read_small_text_no_follow(
         fd = os.open(target, flags)
     except FileNotFoundError:
         return None
+    except (IsADirectoryError, PermissionError):
+        # Windows refuses to open directories with PermissionError.
+        if os.path.isdir(target):
+            raise PrivatePathError(f"Read target is not a regular file: {target}") from None
+        raise
 
     try:
         file_stat = os.fstat(fd)
