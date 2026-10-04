@@ -5,14 +5,15 @@
 
   // ── Token: read from the launch URL fragment, keep in sessionStorage ──
   const TOKEN_KEY = "agent-reach-ui-token";
-  (function captureToken() {
+  function captureToken() {
     const m = /(?:^|[#&])token=([A-Za-z0-9_\-]+)/.exec(location.hash);
-    if (m) {
-      try { sessionStorage.setItem(TOKEN_KEY, m[1]); } catch (_) { /* storage blocked */ }
-      window.__agentReachToken = m[1];
-      history.replaceState(null, "", location.pathname + location.search);
-    }
-  })();
+    if (!m) return false;
+    try { sessionStorage.setItem(TOKEN_KEY, m[1]); } catch (_) { /* storage blocked */ }
+    window.__agentReachToken = m[1];
+    history.replaceState(null, "", location.pathname + location.search);
+    return true;
+  }
+  captureToken();
   function token() {
     if (window.__agentReachToken) return window.__agentReachToken;
     try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (_) { return ""; }
@@ -25,13 +26,14 @@
     error: { glyph: "×", label: "Error", group: "attention" },
     timeout: { glyph: "!", label: "Timed out", group: "attention" },
     off: { glyph: "○", label: "Not set up", group: "setup" },
-    pending: { glyph: "•", label: "Checking", group: "pending" },
+    pending: { glyph: "•", group: "pending",
+      get label() { return state.doctorError && !state.doctorRunning ? "Unknown" : "Checking"; } },
   };
   const GROUPS = [
     ["attention", "Needs attention"],
     ["ready", "Ready"],
     ["setup", "Not set up"],
-    ["pending", "Checking"],
+    ["pending", "Not checked yet"],
   ];
 
   const state = {
@@ -860,6 +862,7 @@
       el("pre", { class: "code-inline-block", text: "agent-reach ui" }))));
     $("channel-list").replaceChildren();
     $("health-count").textContent = "Not connected";
+    $("run-doctor").disabled = true;
     $("health-bar").replaceChildren();
     document.body.dataset.view = "detail";
   }
@@ -945,6 +948,16 @@
   $("close-settings").addEventListener("click", () => $("settings").close());
   $("settings").addEventListener("click", (e) => { if (e.target === $("settings")) $("settings").close(); });
   $("banner-retry").addEventListener("click", () => { api("/api/status").then(() => { if (!state.channels.length) boot(); }).catch(() => {}); });
+
+  // Pasting a fresh launch link into an open tab only changes the fragment.
+  window.addEventListener("hashchange", () => {
+    if (!captureToken()) return;
+    state.unauthorized = false;
+    state.channels = [];
+    state.results = null;
+    document.body.dataset.view = "list";
+    boot();
+  });
 
   setInterval(() => { if (!state.doctorRunning) $("health-checked").textContent = relTime(state.checkedAt); }, 30000);
   setInterval(() => { if (state.offline) api("/api/status").catch(() => {}); }, 5000);
