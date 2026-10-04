@@ -12,7 +12,7 @@ from typing import Dict, Optional
 from rich.markup import escape
 
 from agent_reach.backends.opencli import opencli_status_memo
-from agent_reach.channels import get_all_channels
+from agent_reach.channels import get_all_channels, get_channel
 from agent_reach.config import Config
 from agent_reach.utils.text import scrub_url_credentials
 
@@ -66,19 +66,8 @@ def _normalize_active_backend(status: str, active: Optional[str]) -> Optional[st
     return active
 
 
-def check_all(config: Config, *, timeout: Optional[float] = None) -> Dict[str, dict]:
-    """Check all channels concurrently and return the status dict.
-
-    A single misbehaving channel must never take the whole report down:
-    per-channel exceptions degrade to status="error", and checks still running
-    when the shared ``timeout`` budget (default 30 s, env
-    ``AGENT_REACH_DOCTOR_TIMEOUT``) expires are reported as status="timeout".
-    Checks run in daemon threads so a hung upstream tool can never keep the
-    interpreter alive after the report is printed. Result order always follows
-    the channel registry, independent of completion order.
-    """
-    budget = _resolve_timeout(timeout)
-    channels = list(get_all_channels())
+def _check_channels(channels, config: Config, budget: float) -> Dict[str, dict]:
+    """Run ``channels`` checks concurrently under one shared ``budget``."""
     slots: list = [{} for _ in channels]
     threads = []
 
@@ -125,6 +114,34 @@ def check_all(config: Config, *, timeout: Optional[float] = None) -> Dict[str, d
             "active_backend": active,
         }
     return results
+
+
+def check_all(config: Config, *, timeout: Optional[float] = None) -> Dict[str, dict]:
+    """Check all channels concurrently and return the status dict.
+
+    A single misbehaving channel must never take the whole report down:
+    per-channel exceptions degrade to status="error", and checks still running
+    when the shared ``timeout`` budget (default 30 s, env
+    ``AGENT_REACH_DOCTOR_TIMEOUT``) expires are reported as status="timeout".
+    Checks run in daemon threads so a hung upstream tool can never keep the
+    interpreter alive after the report is printed. Result order always follows
+    the channel registry, independent of completion order.
+    """
+    return _check_channels(list(get_all_channels()), config, _resolve_timeout(timeout))
+
+
+def check_one(
+    name: str, config: Config, *, timeout: Optional[float] = None
+) -> Optional[dict]:
+    """Check a single channel by registry name with the same rules as check_all.
+
+    Returns the same per-channel dict ``check_all`` produces (including the
+    timeout/error degradation), or None when no channel has that name.
+    """
+    channel = get_channel(name)
+    if channel is None:
+        return None
+    return _check_channels([channel], config, _resolve_timeout(timeout))[channel.name]
 
 
 def _name_msg(r: dict, escape) -> str:
