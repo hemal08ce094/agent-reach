@@ -13,7 +13,7 @@ import json
 import sys
 
 from agent_reach.config import Config
-from agent_reach.core import AgentReach
+from agent_reach.core import AgentReach, strip_markup
 from agent_reach.utils.text import scrub_url_credentials
 
 try:
@@ -25,15 +25,38 @@ try:
 except ImportError:
     HAS_MCP = False
 
+MCP_INSTALL_HINT = (
+    "MCP support is not installed. Install the optional extra: python -m pip install "
+    "'agent-reach[mcp] @ https://github.com/hemal08ce094/agent-reach/archive/main.zip' "
+    "(or: python -m pip install 'mcp[cli]>=1.0,<2')"
+)
+
+_STATUS_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "format": {
+            "type": "string",
+            "enum": ["text", "json"],
+            "default": "text",
+            "description": (
+                "text: plain-text report (no terminal markup); json: the same "
+                "per-channel data as `agent-reach doctor --json`"
+            ),
+        },
+    },
+}
+
+
+def _status_text(eyes, output_format: str) -> str:
+    """Build the get_status payload. Blocking; run it off the event loop."""
+    if output_format == "json":
+        return json.dumps(eyes.doctor(), ensure_ascii=False, indent=2)
+    return strip_markup(eyes.doctor_report())
+
 
 def create_server():
     if not HAS_MCP:
-        print(
-            "MCP not installed. Install: python -m pip install "
-            "'agent-reach[mcp] @ "
-            "https://github.com/hemal08ce094/agent-reach/archive/main.zip'",
-            file=sys.stderr,
-        )
+        print(MCP_INSTALL_HINT, file=sys.stderr)
         sys.exit(1)
 
     server = Server("agent-reach")
@@ -44,19 +67,26 @@ def create_server():
     async def list_tools():
         return [
             Tool(name="get_status",
-                 description="Get Agent Reach status: which channels are installed and active.",
-                 inputSchema={"type": "object", "properties": {}}),
+                 description=(
+                     "Get Agent Reach status: which channels are installed and active. "
+                     "Pass format=json for machine-readable per-channel data."
+                 ),
+                 inputSchema=_STATUS_INPUT_SCHEMA),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         try:
             if name == "get_status":
-                result = eyes.doctor_report()
+                output_format = (arguments or {}).get("format") or "text"
+                if output_format not in ("text", "json"):
+                    text = f"Unknown format: {output_format} (expected text or json)"
+                else:
+                    # Doctor probes upstream tools for seconds; never block the
+                    # MCP event loop while it runs.
+                    text = await asyncio.to_thread(_status_text, eyes, output_format)
             else:
-                result = f"Unknown tool: {name}"
-
-            text = json.dumps(result, ensure_ascii=False, indent=2) if isinstance(result, (dict, list)) else str(result)
+                text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=text)]
         except Exception as e:
             return [

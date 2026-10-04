@@ -36,7 +36,20 @@ class AgentReach:
         from agent_reach.doctor import check_all
         return check_all(self.config)
 
-    def doctor_report(self) -> str:
-        """Get formatted health report."""
+    def doctor_report(self, *, plain: bool = False) -> str:
+        """Get formatted health report.
+
+        By default the report carries Rich markup for terminal rendering;
+        ``plain=True`` strips it for consumers that show raw text (MCP clients,
+        logs, chat transcripts).
+        """
         from agent_reach.doctor import check_all, format_report
-        return format_report(check_all(self.config))
+        report = format_report(check_all(self.config))
+        return strip_markup(report) if plain else report
+
+
+def strip_markup(text: str) -> str:
+    """Render Rich console markup to plain text (``[bold]x[/bold]`` -> ``x``)."""
+    from rich.text import Text
+
+    return Text.from_markup(text).plain

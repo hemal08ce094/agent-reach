@@ -12,5 +12,6 @@ from .opencli import (  # noqa: F401
     OPENCLI_PACKAGE,
     OpenCLIStatus,
     opencli_status,
+    opencli_status_memo,
     opencli_summary,
 )

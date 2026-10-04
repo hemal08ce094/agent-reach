@@ -4,32 +4,114 @@
 Each channel knows how to check itself. Doctor just collects the results.
 """
 
-from typing import Dict
+import os
+import threading
+import time
+from typing import Dict, Optional
 
 from rich.markup import escape
 
+from agent_reach.backends.opencli import opencli_status_memo
 from agent_reach.channels import get_all_channels
 from agent_reach.config import Config
 from agent_reach.utils.text import scrub_url_credentials
 
+#: Wall-clock budget for the whole doctor run, in seconds. All channel checks
+#: run concurrently and share this budget; it is not multiplied per channel.
+DEFAULT_CHECK_TIMEOUT = 30.0
 
-def check_all(config: Config) -> Dict[str, dict]:
-    """Check all channels and return status dict.
+#: Statuses for which ``active_backend`` names the backend that would serve
+#: the channel. For every other status it is None.
+_USABLE_STATUSES = ("ok", "warn")
 
-    A single misbehaving channel must never take the whole report down,
-    so per-channel exceptions degrade to status="error".
-    """
-    results = {}
-    for ch in get_all_channels():
+
+def _resolve_timeout(timeout: Optional[float]) -> float:
+    if timeout is not None:
+        return max(0.0, float(timeout))
+    raw = os.environ.get("AGENT_REACH_DOCTOR_TIMEOUT", "").strip()
+    if raw:
         try:
-            status, message = ch.check(config)
-            active = getattr(ch, "active_backend", None)
-        except Exception as e:  # noqa: BLE001 — doctor must survive any channel
-            # Channels are registry singletons: a stale active_backend from a
-            # previous check must not leak into an errored result.
-            status = "error"
-            message = f"Health check failed: {e}"
-            active = None
+            value = float(raw)
+        except ValueError:
+            value = DEFAULT_CHECK_TIMEOUT
+        if value > 0:
+            return value
+    return DEFAULT_CHECK_TIMEOUT
+
+
+def _run_check(ch, config, slot: dict) -> None:
+    """Thread body: run one channel check and store (status, message, active)."""
+    try:
+        status, message = ch.check(config)
+        active = getattr(ch, "active_backend", None)
+    except Exception as e:  # noqa: BLE001 — doctor must survive any channel
+        # Channels are registry singletons: a stale active_backend from a
+        # previous check must not leak into an errored result.
+        status = "error"
+        message = f"Health check failed: {e}"
+        active = None
+    slot["result"] = (status, message, active)
+
+
+def _normalize_active_backend(status: str, active: Optional[str]) -> Optional[str]:
+    """Enforce the status side of the ``active_backend`` contract.
+
+    Channels set ``active_backend`` to the backend that would be used whenever
+    they report ok or warn (see ``Channel.pick_finding``). Doctor cannot infer
+    it — "warn" also covers "not installed, but optional" — so it only
+    guarantees that off/error/timeout results never carry a backend.
+    """
+    if status not in _USABLE_STATUSES:
+        return None
+    return active
+
+
+def check_all(config: Config, *, timeout: Optional[float] = None) -> Dict[str, dict]:
+    """Check all channels concurrently and return the status dict.
+
+    A single misbehaving channel must never take the whole report down:
+    per-channel exceptions degrade to status="error", and checks still running
+    when the shared ``timeout`` budget (default 30 s, env
+    ``AGENT_REACH_DOCTOR_TIMEOUT``) expires are reported as status="timeout".
+    Checks run in daemon threads so a hung upstream tool can never keep the
+    interpreter alive after the report is printed. Result order always follows
+    the channel registry, independent of completion order.
+    """
+    budget = _resolve_timeout(timeout)
+    channels = list(get_all_channels())
+    slots: list = [{} for _ in channels]
+    threads = []
+
+    with opencli_status_memo():
+        for ch, slot in zip(channels, slots):
+            thread = threading.Thread(
+                target=_run_check,
+                args=(ch, config, slot),
+                name=f"agent-reach-doctor-{ch.name}",
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+
+        deadline = time.monotonic() + budget
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+    results = {}
+    for ch, slot, thread in zip(channels, slots, threads):
+        result = slot.get("result")
+        if result is None and thread.is_alive():
+            status, message, active = (
+                "timeout",
+                f"Health check did not finish within {budget:g}s; "
+                "an upstream tool may be hanging",
+                None,
+            )
+        elif result is None:
+            status, message, active = ("error", "Health check aborted", None)
+        else:
+            status, message, active = result
+        active = _normalize_active_backend(status, active)
         # Doctor is the final output boundary for both expected channel
         # messages and unexpected exceptions. Upstream probe output can echo a
         # configured URL, so scrub every path before JSON/text rendering.
@@ -78,7 +160,7 @@ def format_report(results: Dict[str, dict]) -> str:
                 lines.append(f"  [green]✅[/green] {name_msg}")
             elif r["status"] == "warn":
                 lines.append(f"  [yellow][!][/yellow]  {name_msg}")
-            elif r["status"] in ("off", "error"):
+            elif r["status"] in ("off", "error", "timeout"):
                 lines.append(f"  [red][X][/red]  {name_msg}")
 
     # Tier 1 — needs free key / login

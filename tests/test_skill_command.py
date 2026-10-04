@@ -62,25 +62,26 @@ class TestSkillCommand(unittest.TestCase):
             .read_text(encoding="utf-8")
         )
 
+        # key=value form (#679): mcporter keeps inner quotes as part of the value.
         self.assertIn(
             "linkedin.get_person_profile "
-            'linkedin_username="username" '
-            'sections="experience,education"',
+            "linkedin_username=username "
+            "sections=experience,education",
             career_reference,
         )
         self.assertIn(
-            'linkedin.search_people keywords="AI engineer" '
-            'location="Shanghai"',
+            'linkedin.search_people "keywords=AI engineer" '
+            "location=Shanghai",
             career_reference,
         )
         self.assertIn(
-            'linkedin.get_company_profile company_name="openai" '
-            'sections="posts,jobs"',
+            "linkedin.get_company_profile company_name=openai "
+            "sections=posts,jobs",
             career_reference,
         )
         self.assertIn(
-            'linkedin.search_jobs keywords="software engineer" '
-            'location="Remote" max_pages=2',
+            'linkedin.search_jobs "keywords=software engineer" '
+            "location=Remote max_pages=2",
             career_reference,
         )
         self.assertNotIn("linkedin-scraper.", career_reference)
@@ -165,6 +166,7 @@ class TestSkillCommand(unittest.TestCase):
                 # Remove OPENCLAW_HOME to avoid interference
                 env = os.environ.copy()
                 env.pop("OPENCLAW_HOME", None)
+                env["HOME"] = tmpdir  # skill roots resolve via home_dir()
                 with patch.dict(os.environ, env, clear=True):
                     _install_skill()
 
@@ -195,6 +197,7 @@ class TestSkillCommand(unittest.TestCase):
             ), patch.dict(os.environ, {}, clear=False):
                 env = os.environ.copy()
                 env.pop("OPENCLAW_HOME", None)
+                env["HOME"] = tmpdir  # skill roots resolve via home_dir()
                 with patch.dict(os.environ, env, clear=True):
                     _uninstall_skill()
 
@@ -213,6 +216,7 @@ class TestSkillCommand(unittest.TestCase):
             ), patch.dict(os.environ, {}, clear=False):
                 env = os.environ.copy()
                 env.pop("OPENCLAW_HOME", None)
+                env["HOME"] = tmpdir  # skill roots resolve via home_dir()
                 with patch.dict(os.environ, env, clear=True):
                     _install_skill()
 
@@ -223,7 +227,7 @@ class TestSkillCommand(unittest.TestCase):
             self.assertIn("Agent Reach", content)
 
     def test_install_uses_english_skill_for_english_locale(self):
-        """_install_skill should install the English skill file for English locales."""
+        """The English fork installs the same English SKILL.md for every locale."""
         with tempfile.TemporaryDirectory() as tmpdir:
             skill_parent = os.path.join(tmpdir, ".openclaw", "skills")
             os.makedirs(skill_parent)
@@ -234,6 +238,7 @@ class TestSkillCommand(unittest.TestCase):
             ):
                 env = os.environ.copy()
                 env.pop("OPENCLAW_HOME", None)
+                env["HOME"] = tmpdir  # skill roots resolve via home_dir()
                 env["LANG"] = "en_US.UTF-8"
                 with patch.dict(os.environ, env, clear=True):
                     _install_skill()

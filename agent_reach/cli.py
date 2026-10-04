@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -57,6 +58,66 @@ def _ensure_utf8_console():
         pass
 
 
+def _utf8_text_stream(stream):
+    """Return a UTF-8 reader for a redirected (non-tty) text stream.
+
+    Piped input (``mcporter ... | agent-reach format xhs``, ``configure
+    --stdin``) is UTF-8, but Python decodes stdin with the locale code page
+    (e.g. GBK/cp936 on zh-CN Windows) and raises UnicodeDecodeError. A tty, a
+    stream that is already UTF-8, or one without a binary buffer (test
+    doubles) is returned unchanged.
+    """
+    if stream is None:
+        return stream
+    try:
+        if stream.isatty():
+            return stream
+    except (AttributeError, OSError, ValueError):
+        return stream
+    encoding = str(getattr(stream, "encoding", "") or "").replace("_", "-").lower()
+    if encoding in ("utf-8", "utf8"):
+        return stream
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:
+        return stream
+    import io
+
+    return io.TextIOWrapper(buffer, encoding="utf-8", errors="replace")
+
+
+def _ensure_utf8_stdin():
+    """Decode redirected stdin as UTF-8 on every platform (CLI runtime only)."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        sys.stdin = _utf8_text_stream(sys.stdin)
+    except Exception:
+        pass
+
+
+def _report_config_error(exc) -> None:
+    """Print a one-line config error with a remedy and exit 2 (no traceback)."""
+    from agent_reach.config import Config, ConfigSecurityError
+    from agent_reach.utils.paths import PrivatePathError
+    from agent_reach.utils.text import scrub_url_credentials
+
+    print(f"agent-reach: error: {scrub_url_credentials(exc)}", file=sys.stderr)
+    if isinstance(exc, (ConfigSecurityError, PrivatePathError)):
+        print(
+            "  Agent Reach never writes credentials through a symlink. Point HOME at "
+            "the real directory (or replace the link with a real directory) and "
+            "retry; read-only commands such as `agent-reach doctor` still work.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"  Fix or remove {Config.CONFIG_FILE} and retry "
+            "(it is plain YAML: one `key: value` per line).",
+            file=sys.stderr,
+        )
+    raise SystemExit(2)
+
+
 def _configure_logging(verbose: bool = False):
     """Suppress loguru output unless --verbose is set."""
     from loguru import logger
@@ -67,6 +128,7 @@ def _configure_logging(verbose: bool = False):
 
 def main():
     _ensure_utf8_console()
+    _ensure_utf8_stdin()
 
     parser = argparse.ArgumentParser(
         prog="agent-reach",
@@ -235,6 +297,17 @@ def main():
         print(f"Agent Reach v{__version__}")
         sys.exit(0)
 
+    from agent_reach.config import ConfigError
+    from agent_reach.utils.paths import PrivatePathError
+
+    try:
+        _dispatch(args)
+    except (ConfigError, PrivatePathError) as exc:
+        _report_config_error(exc)
+
+
+def _dispatch(args):
+    """Run the selected subcommand."""
     if args.command == "doctor":
         _cmd_doctor(args)
     elif args.command == "check-update":
@@ -266,16 +339,22 @@ def _cmd_install(args):
 
     from agent_reach.config import Config
     from agent_reach.doctor import check_all, format_report
+    from agent_reach.utils.paths import home_dir
 
     safe_mode = getattr(args, "safe", False) or not getattr(args, "system", False)
     dry_run = args.dry_run
+
+    # Resolve the environment once; installers whose backend depends on it
+    # receive the resolved value instead of re-detecting (an explicit --env
+    # must win over auto-detection).
+    env: str = args.env
 
     # Validate channel names before constructing config or changing the system.
     CHANNEL_INSTALLERS = {
         "twitter":     _install_twitter_deps,
         "xiaoyuzhou":  _install_xiaoyuzhou_deps,
-        "xiaohongshu": _install_xhs_deps,
-        "reddit":      _install_reddit_deps,
+        "xiaohongshu": lambda: _install_xhs_deps(env),
+        "reddit":      lambda: _install_reddit_deps(env),
         "facebook":    _install_opencli_deps,
         "instagram":   _install_opencli_deps,
         "bilibili":    _install_bili_deps,
@@ -320,21 +399,22 @@ def _cmd_install(args):
 
     # Only a real installation may create persistent directories.
     if not dry_run and not safe_mode:
-        tools_dir = os.path.expanduser("~/.agent-reach/tools")
+        tools_dir = home_dir() / ".agent-reach" / "tools"
         os.makedirs(tools_dir, exist_ok=True)
 
     DESKTOP_ONLY_CHANNELS = {"opencli", "facebook", "instagram", "boss"}
     COOKIE_CHANNELS = {"twitter", "xueqiu", "bilibili", "xiaohongshu"}
 
     # Auto-detect environment
-    env = args.env
-    if env == "auto":
+    detected = env == "auto"
+    if detected:
         env = _detect_environment()
 
+    how = "auto-detected" if detected else "--env"
     if env == "server":
-        print("Environment: Server/VPS (auto-detected)")
+        print(f"Environment: Server/VPS ({how})")
     else:
-        print("Environment: Local computer (auto-detected)")
+        print(f"Environment: Local computer ({how})")
 
     server_skipped_desktop_channels = set()
     if env == "server" and requested_channels:
@@ -477,96 +557,138 @@ def _cmd_install(args):
         print("Dry run complete. No changes were made.")
 
 
-def _install_skill(force: bool = True):
-    """Install Agent Reach as an agent skill for supported agent clients."""
+#: The single skill file installed for every locale. SKILL_en.md still ships
+#: (identical English content) for tools that reference it by name.
+_SKILL_RESOURCE_NAME = "SKILL.md"
+
+
+def _skill_roots():
+    """Known agent skill roots as (directory, platform label), resolved via home_dir().
+
+    ``$OPENCLAW_HOME/.openclaw/skills`` comes first when the variable is set.
+    """
+    from pathlib import Path
+
+    from agent_reach.utils.paths import home_dir
+
+    home = home_dir()
+    roots = [
+        (home / ".agents" / "skills", "Agent"),
+        (home / ".config" / "opencode" / "skills", "OpenCode"),
+        (home / ".openclaw" / "skills", "OpenClaw"),
+        (home / ".claude" / "skills", "Claude Code"),
+    ]
+    openclaw_home = os.environ.get("OPENCLAW_HOME")
+    if openclaw_home:
+        roots.insert(0, (Path(openclaw_home) / ".openclaw" / "skills", "OpenClaw"))
+    return [(os.fspath(path), label) for path, label in roots]
+
+
+def _load_skill_files() -> dict:
+    """Read the packaged skill into memory: {relative path: text}.
+
+    Raises when SKILL.md cannot be read, so callers never touch an installed
+    skill before the replacement is known to be complete.
+    """
     import importlib.resources
-    import os
+    from pathlib import Path
+
+    def _read(skill_pkg) -> dict:
+        files = {
+            "SKILL.md": skill_pkg.joinpath(_SKILL_RESOURCE_NAME).read_text(
+                encoding="utf-8"
+            )
+        }
+        refs_pkg = skill_pkg.joinpath("references")
+        if refs_pkg.is_dir():
+            for ref_file in refs_pkg.iterdir():
+                if ref_file.name.endswith(".md"):
+                    files[f"references/{ref_file.name}"] = ref_file.read_text(
+                        encoding="utf-8"
+                    )
+        if not files["SKILL.md"].strip():
+            raise ValueError("packaged SKILL.md is empty")
+        return files
+
+    try:
+        return _read(importlib.resources.files("agent_reach").joinpath("skill"))
+    except Exception:
+        # Editable/zip installs where importlib.resources cannot see the files.
+        return _read(Path(__file__).resolve().parent / "skill")
+
+
+def _remove_path(path: str) -> None:
+    """Remove a file, symlink (never its target) or directory tree."""
     import shutil
 
-    def _is_english_locale(value: str) -> bool:
-        normalized = value.strip().lower()
-        return normalized.startswith("en") or normalized.startswith("english")
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.unlink(path)
+    else:
+        shutil.rmtree(path)
 
-    def _skill_resource_name() -> str:
-        # Both SKILL.md (the default) and SKILL_en.md ship in English; the locale
-        # switch is kept so a localized default can be dropped in later.
-        locale_candidates = (
-            os.environ.get("AGENT_REACH_LANG", ""),
-            os.environ.get("LC_ALL", ""),
-            os.environ.get("LC_MESSAGES", ""),
-            os.environ.get("LANG", ""),
-        )
-        if any(_is_english_locale(candidate) for candidate in locale_candidates):
-            return "SKILL_en.md"
-        return "SKILL.md"
 
-    def _read_skill_markdown(skill_pkg):
-        resource_name = _skill_resource_name()
+def _write_skill_dir(target: str, files: dict) -> None:
+    """Atomically replace ``target`` with a directory holding ``files``.
+
+    The new tree is written to a sibling temp directory first and swapped in
+    with renames, so a failure at any point leaves the previous installation
+    (or nothing, on first install) in place. A symlinked skill directory
+    (dotfiles setups) is replaced by a real one; its target is never touched.
+    """
+    import shutil
+    import tempfile
+    import uuid
+
+    parent = os.path.dirname(target)
+    name = os.path.basename(target)
+    staging = tempfile.mkdtemp(prefix=f".{name}.", suffix=".new", dir=parent)
+    try:
+        for rel_path, text in files.items():
+            destination = os.path.join(staging, *rel_path.split("/"))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            with open(destination, "w", encoding="utf-8") as handle:
+                handle.write(text)
+
+        backup = None
+        if os.path.lexists(target):
+            backup = os.path.join(parent, f".{name}.{uuid.uuid4().hex}.old")
+            os.rename(target, backup)
         try:
-            return skill_pkg.joinpath(resource_name).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return skill_pkg.joinpath("SKILL.md").read_text(encoding="utf-8")
+            os.rename(staging, target)
+        except BaseException:
+            if backup is not None:
+                os.rename(backup, target)
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if backup is not None:
+        try:
+            _remove_path(backup)
+        except OSError:
+            pass
+
+
+def _install_skill(force: bool = True):
+    """Install Agent Reach as an agent skill for supported agent clients."""
+    files_cache: dict = {}
 
     def _copy_skill_dir(target: str) -> str | None:
-        """Copy entire skill directory (locale-specific SKILL.md + references/)."""
+        """Install SKILL.md + references/ into ``target`` (atomic refresh)."""
         try:
             if not force and os.path.exists(os.path.join(target, "SKILL.md")):
                 return "preserved"
-
-            # Clear existing installation. A symlinked skill dir (dotfiles
-            # setups) breaks shutil.rmtree — unlink the link itself instead.
-            if os.path.islink(target):
-                os.unlink(target)
-            elif os.path.exists(target):
-                shutil.rmtree(target)
-            os.makedirs(target, exist_ok=True)
-
-            # Get skill directory from package (with fallback for editable installs)
-            try:
-                skill_pkg = importlib.resources.files("agent_reach").joinpath("skill")
-                skill_md = _read_skill_markdown(skill_pkg)
-            except Exception:
-                from pathlib import Path
-                skill_pkg = Path(__file__).resolve().parent / "skill"
-                skill_md = _read_skill_markdown(skill_pkg)
-
-            # Copy SKILL.md using the selected locale file
-            with open(os.path.join(target, "SKILL.md"), "w", encoding="utf-8") as f:
-                f.write(skill_md)
-
-            # Copy references/ directory
-            refs_pkg = skill_pkg.joinpath("references")
-            refs_target = os.path.join(target, "references")
-            os.makedirs(refs_target, exist_ok=True)
-
-            for ref_file in refs_pkg.iterdir():
-                name = ref_file.name if hasattr(ref_file, 'name') else str(ref_file).split('/')[-1]
-                if name.endswith(".md"):
-                    content = ref_file.read_text(encoding="utf-8") if hasattr(ref_file, 'read_text') else ref_file.read_text()
-                    with open(os.path.join(refs_target, name), "w", encoding="utf-8") as f:
-                        f.write(content)
-
+            if not files_cache:
+                files_cache.update(_load_skill_files())
+            _write_skill_dir(target, files_cache)
             return "installed"
         except Exception as e:
             print(f"  Warning: Could not install skill: {e}")
             return None
 
+    skill_dirs = _skill_roots()
+
     # Install into every known skill root that already exists.
-    skill_dirs = [
-        (os.path.expanduser("~/.agents/skills"), "Agent"),
-        (os.path.expanduser("~/.config/opencode/skills"), "OpenCode"),
-        (os.path.expanduser("~/.openclaw/skills"), "OpenClaw"),
-        (os.path.expanduser("~/.claude/skills"), "Claude Code"),
-    ]
-
-    # Insert OPENCLAW_HOME path at the beginning if environment variable is set
-    openclaw_home = os.environ.get("OPENCLAW_HOME")
-    if openclaw_home:
-        skill_dirs.insert(
-            0,
-            (os.path.join(openclaw_home, ".openclaw", "skills"), "OpenClaw"),
-        )
-
     installed = False
     for skill_dir, platform_name in skill_dirs:
         if os.path.isdir(skill_dir):
@@ -581,7 +703,9 @@ def _install_skill(force: bool = True):
 
     if not installed:
         # No known skill directory found — create for .agents by default
-        target = os.path.expanduser("~/.agents/skills/agent-reach")
+        from agent_reach.utils.paths import home_dir
+
+        target = os.fspath(home_dir() / ".agents" / "skills" / "agent-reach")
         os.makedirs(os.path.dirname(target), exist_ok=True)
         status = _copy_skill_dir(target)
         if status == "preserved":
@@ -598,41 +722,31 @@ def _install_skill(force: bool = True):
     return installed
 
 
-def _uninstall_skill():
-    """Remove SKILL.md from all known agent skill directories."""
-    import shutil
+def _uninstall_skill(dry_run: bool = False, *, report_none: bool = True):
+    """Remove the agent-reach skill from every known skill root.
 
-    skill_dirs = [
-        ("~/.config/opencode/skills/agent-reach", "OpenCode"),
-        ("~/.openclaw/skills/agent-reach", "OpenClaw"),
-        ("~/.claude/skills/agent-reach", "Claude Code"),
-        ("~/.agents/skills/agent-reach", "Agent"),
-    ]
-
-    # Also check OPENCLAW_HOME
-    openclaw_home = os.environ.get("OPENCLAW_HOME")
-    if openclaw_home:
-        skill_dirs.insert(
-            0,
-            (os.path.join(openclaw_home, ".openclaw", "skills", "agent-reach"), "OpenClaw"),
-        )
-
+    Returns ``(removed_any, ok)``; ``ok`` is False when any removal failed.
+    """
     removed = False
-    for skill_path_template, platform_name in skill_dirs:
-        skill_path = os.path.expanduser(skill_path_template)
-        if os.path.isdir(skill_path):
-            try:
-                if os.path.islink(skill_path):
-                    os.unlink(skill_path)
-                else:
-                    shutil.rmtree(skill_path)
-                print(f"  Removed {platform_name} skill: {skill_path}")
-                removed = True
-            except Exception as e:
-                print(f"  Could not remove {skill_path}: {e}")
+    ok = True
+    for skill_dir, platform_name in _skill_roots():
+        skill_path = os.path.join(skill_dir, "agent-reach")
+        if not (os.path.isdir(skill_path) or os.path.islink(skill_path)):
+            continue
+        if dry_run:
+            print(f"[dry-run] Would remove {platform_name} skill: {skill_path}")
+            continue
+        try:
+            _remove_path(skill_path)
+            print(f"  Removed {platform_name} skill: {skill_path}")
+            removed = True
+        except Exception as e:
+            ok = False
+            print(f"  Could not remove {skill_path}: {e}")
 
-    if not removed:
+    if not removed and ok and not dry_run and report_none:
         print("  No skill installations found.")
+    return removed, ok
 
 
 def _cmd_skill(args):
@@ -641,7 +755,9 @@ def _cmd_skill(args):
         if not _install_skill():
             raise SystemExit(1)
     elif args.uninstall:
-        _uninstall_skill()
+        _removed, ok = _uninstall_skill()
+        if not ok:
+            raise SystemExit(1)
 
 
 def _cmd_format(args):
@@ -836,7 +952,9 @@ def _install_system_deps():
     elif shutil.which("node"):
         from agent_reach.channels.youtube import (
             _JS_RUNTIMES_SUPPORTED_FROM,
+            _has_js_runtime_config,
             _parse_ytdlp_version,
+            find_ytdlp_user_config,
         )
         from agent_reach.utils.paths import (
             PrivatePathError,
@@ -873,18 +991,16 @@ def _install_system_deps():
                 '"yt-dlp[default]"'
             )
         else:
-            ytdlp_config = get_ytdlp_config_path()
+            # Edit the config file yt-dlp actually loads, not just the default path.
+            ytdlp_config = find_ytdlp_user_config() or get_ytdlp_config_path()
             try:
-                existing_config = read_small_text_no_follow(
-                    ytdlp_config,
-                    max_bytes=1024 * 1024,
-                )
-                if (
-                    existing_config is not None
-                    and "--js-runtimes" in existing_config
-                ):
+                if _has_js_runtime_config(ytdlp_config):
                     print("  ✅ yt-dlp JS runtime already configured")
                 else:
+                    existing_config = read_small_text_no_follow(
+                        ytdlp_config,
+                        max_bytes=1024 * 1024,
+                    )
                     existing_config = existing_config or ""
                     separator = (
                         ""
@@ -924,7 +1040,9 @@ def _install_xiaoyuzhou_deps():
     config = Config()
     print("Setting up Xiaoyuzhou podcast transcription...")
 
-    tools_dir = os.path.expanduser("~/.agent-reach/tools/xiaoyuzhou")
+    from agent_reach.utils.paths import home_dir
+
+    tools_dir = os.fspath(home_dir() / ".agent-reach" / "tools" / "xiaoyuzhou")
     script_dst = os.path.join(tools_dir, "transcribe.sh")
 
     script_src = os.path.join(
@@ -1036,7 +1154,7 @@ def _install_boss_deps():
     return False
 
 
-def _install_xhs_deps():
+def _install_xhs_deps(env: str | None = None):
     """Set up XiaoHongShu — backend depends on environment.
 
     Desktop: OpenCLI (reuses the browser session, zero config).
@@ -1048,7 +1166,9 @@ def _install_xhs_deps():
     import shutil
 
     print("Setting up XiaoHongShu...")
-    if _detect_environment() == "server":
+    if env is None:
+        env = _detect_environment()
+    if env == "server":
         print("  On servers, xiaohongshu-mcp is recommended:")
         print("    1. Download the binary: https://github.com/xpzouying/xiaohongshu-mcp/releases")
         print("       (putting it under ~/.agent-reach/tools/ is recommended)")
@@ -1123,13 +1243,15 @@ def _install_opencli_deps():
         return False
 
 
-def _install_reddit_deps():
+def _install_reddit_deps(env: str | None = None):
     """Set up Reddit — desktop prefers OpenCLI, rdt-cli for servers/legacy.
 
     No zero-config path exists (anonymous .json blocked, official API
     approval-gated since 2025-11) — every backend needs a logged-in session.
     """
-    if _detect_environment() != "server":
+    if env is None:
+        env = _detect_environment()
+    if env != "server":
         installed = _install_opencli_deps()
         print("  Reddit uses OpenCLI (works once you are logged in to reddit.com in the browser)")
         import shutil
@@ -1573,9 +1695,17 @@ def _cmd_configure(args):
             raise SystemExit(1)
 
     elif args.key == "youtube-cookies":
-        config.set("youtube_cookies_from", value)
-        print(f"✅ YouTube cookie source configured: {value}")
-        print("   yt-dlp will use cookies from this browser for age-restricted/member videos.")
+        try:
+            cookie_source = _normalize_youtube_cookie_source(value)
+        except ValueError as exc:
+            print(f"agent-reach configure: error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+        config.set("youtube_cookies_from", cookie_source)
+        print(f"✅ YouTube cookie source configured: {cookie_source}")
+        print(
+            "   agent-reach transcribe passes it to yt-dlp as --cookies-from-browser "
+            "for YouTube URLs (age-restricted/member videos)."
+        )
 
     elif args.key == "xhs-cookies":
         if not _configure_xhs_cookies(value):
@@ -1620,6 +1750,68 @@ def _cmd_transcribe(args):
         print(f"✅ Transcript written to {args.output}")
     else:
         print(text)
+
+
+#: Browsers and keyrings yt-dlp's --cookies-from-browser accepts.
+_YTDLP_COOKIE_BROWSERS = frozenset(
+    {"brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi", "whale"}
+)
+_YTDLP_COOKIE_KEYRINGS = frozenset(
+    {"BASICTEXT", "GNOMEKEYRING", "KWALLET", "KWALLET5", "KWALLET6"}
+)
+
+
+def _normalize_youtube_cookie_source(value: str) -> str:
+    """Validate and normalise a yt-dlp ``--cookies-from-browser`` value.
+
+    Grammar: ``BROWSER[+KEYRING][:PROFILE][::CONTAINER]``. The browser is
+    lower-cased and the keyring upper-cased; the profile and container are
+    kept verbatim. Raises ValueError with a user-facing message on junk.
+    """
+    import re
+
+    source = value.strip()
+    if not source:
+        raise ValueError("missing YouTube cookie browser")
+    if any(ord(character) < 32 or ord(character) == 127 for character in source):
+        raise ValueError("YouTube cookie browser contains a control character")
+    match = re.fullmatch(
+        r"(?P<browser>[^+:]+?)\s*"
+        r"(?:\+\s*(?P<keyring>[^:]+?)\s*)?"
+        r"(?::(?!:)\s*(?P<profile>.*?)\s*)?"
+        r"(?:::\s*(?P<container>.*?)\s*)?",
+        source,
+    )
+    if match is None:
+        raise ValueError(
+            f"invalid YouTube cookie browser {source!r}; expected "
+            "BROWSER[+KEYRING][:PROFILE][::CONTAINER], e.g. chrome or firefox:default"
+        )
+    browser = match.group("browser").strip().lower()
+    if browser not in _YTDLP_COOKIE_BROWSERS:
+        raise ValueError(
+            f"unsupported YouTube cookie browser {browser!r}; choose one of: "
+            f"{', '.join(sorted(_YTDLP_COOKIE_BROWSERS))}"
+        )
+    normalized = browser
+    keyring = match.group("keyring")
+    if keyring is not None:
+        keyring = keyring.strip().upper()
+        if keyring not in _YTDLP_COOKIE_KEYRINGS:
+            raise ValueError(
+                f"unsupported keyring {keyring!r}; choose one of: "
+                f"{', '.join(sorted(_YTDLP_COOKIE_KEYRINGS))}"
+            )
+        normalized += f"+{keyring}"
+    profile = match.group("profile")
+    if profile:
+        normalized += f":{profile}"
+    container = match.group("container")
+    if container:
+        if browser != "firefox":
+            raise ValueError("a ::CONTAINER is only supported for firefox")
+        normalized += f"::{container}"
+    return normalized
 
 
 def _parse_twitter_cookie_input(value: str):
@@ -1786,8 +1978,18 @@ def _configure_xhs_cookies(value) -> bool:
             [docker, "ps", "--filter", "name=xiaohongshu-mcp", "--format", "{{.Names}}"],
             capture_output=True, encoding="utf-8", timeout=5,
         )
-        container_name = result.stdout.strip()
-        if not container_name:
+        # `--filter name=` is a substring match; pick the exact container, or
+        # the only match (e.g. a compose-prefixed name), never a multi-line blob.
+        running = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if "xiaohongshu-mcp" in running:
+            container_name = "xiaohongshu-mcp"
+        elif len(running) == 1:
+            container_name = running[0]
+        elif running:
+            print("[X] Several running containers match xiaohongshu-mcp: " + ", ".join(running))
+            print("   Stop the extra ones or name the target container exactly xiaohongshu-mcp.")
+            return False
+        else:
             print("[X] xiaohongshu-mcp container is not running.")
             print("   Start it first:")
             print("   docker run -d --name xiaohongshu-mcp -p 18060:18060 xpzouying/xiaohongshu-mcp")
@@ -1901,6 +2103,7 @@ def _cmd_uninstall(args):
         print()
 
     removed_any = False
+    failed = False
     mcporter_cleanup_skipped = False
 
     # ── 1. Config directory (~/.agent-reach/) ──
@@ -1916,6 +2119,7 @@ def _cmd_uninstall(args):
                     print(f"  Removed config directory: {config_dir}")
                     removed_any = True
                 except Exception as e:
+                    failed = True
                     print(f"  Could not remove {config_dir}: {e}")
         else:
             print(f"  Config directory not found (already clean): {config_dir}")
@@ -1938,41 +2142,25 @@ def _cmd_uninstall(args):
             print(f"      {path}")
         print("      If xfetch/bird no longer use them, delete them manually.")
 
-    # ── 2. Skill files ──
-    skill_dirs = [
-        ("~/.config/opencode/skills/agent-reach", "OpenCode"),
-        ("~/.openclaw/skills/agent-reach", "OpenClaw"),
-        ("~/.claude/skills/agent-reach", "Claude Code"),
-        ("~/.agents/skills/agent-reach", "Agent"),
-    ]
-
-    for skill_path_template, platform_name in skill_dirs:
-        skill_path = os.path.expanduser(skill_path_template)
-        if os.path.isdir(skill_path):
-            if dry_run:
-                print(f"[dry-run] Would remove {platform_name} skill: {skill_path}")
-            else:
-                try:
-                    if os.path.islink(skill_path):
-                        os.unlink(skill_path)
-                    else:
-                        shutil.rmtree(skill_path)
-                    print(f"  Removed {platform_name} skill: {skill_path}")
-                    removed_any = True
-                except Exception as e:
-                    print(f"  Could not remove {skill_path}: {e}")
+    # ── 2. Skill files (same roots as install, including $OPENCLAW_HOME) ──
+    skills_removed, skills_ok = _uninstall_skill(dry_run=dry_run, report_none=False)
+    removed_any = removed_any or skills_removed
+    failed = failed or not skills_ok
 
     # ── 3. mcporter MCP entries ──
-    if shutil.which("mcporter"):
+    mcporter_cmd = shutil.which("mcporter")
+    if mcporter_cmd:
         from agent_reach.channels.mcporter import (
             McporterConfigError,
             configured_server_names,
         )
 
         try:
+            # Use the resolved path: on Windows `mcporter` is a .cmd shim that
+            # CreateProcess cannot start by bare name.
             result = subprocess.run(
                 [
-                    "mcporter",
+                    mcporter_cmd,
                     "config",
                     "list",
                     "--json",
@@ -2011,7 +2199,9 @@ def _cmd_uninstall(args):
         print("Dry run complete. No changes were made.")
         print("Run without --dry-run to actually remove the above.")
     else:
-        if removed_any:
+        if failed:
+            print("Uninstall incomplete: some paths could not be removed (see above).")
+        elif removed_any:
             print("Agent Reach data removed.")
         elif mcporter_cleanup_skipped:
             print("No proven Agent Reach-managed mcporter data was removed.")
@@ -2026,6 +2216,8 @@ def _cmd_uninstall(args):
     print("  npm uninstall -g mcporter")
     print("  pipx uninstall twitter-cli")
     print("  npm uninstall -g undici")
+    if failed:
+        raise SystemExit(1)
 
 
 def _cmd_doctor(args=None):
@@ -2065,7 +2257,8 @@ def _cmd_setup():
     print("[Recommended] Web search — Exa (via mcporter)")
     print("  Free, no API key needed")
 
-    if not shutil.which("mcporter"):
+    mcporter_cmd = shutil.which("mcporter")
+    if not mcporter_cmd:
         print("  Status: -- mcporter not installed")
         print("  Install: npm install -g mcporter")
         print("  Then: mcporter config add exa https://mcp.exa.ai/mcp --scope home")
@@ -2078,7 +2271,7 @@ def _cmd_setup():
             )
 
             r = subprocess.run(
-                ["mcporter", "config", "list", "--json"],
+                [mcporter_cmd, "config", "list", "--json"],
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
@@ -2094,7 +2287,7 @@ def _cmd_setup():
                 if setup_now in ("", "y", "yes"):
                     add_r = subprocess.run(
                         [
-                            "mcporter",
+                            mcporter_cmd,
                             "config",
                             "add",
                             "exa",
@@ -2220,6 +2413,22 @@ def _classify_github_response_error(resp):
     return None
 
 
+#: Upper bound for one retry sleep, whatever Retry-After says.
+_MAX_RETRY_DELAY_SECONDS = 30.0
+
+
+def _json_object(resp):
+    """Return the response body as a dict, or None for non-JSON/non-object bodies.
+
+    Captive portals and proxies answer GitHub URLs with HTML and status 200.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _github_get_with_retry(url, timeout=10, retries=3, sleeper=time.sleep):
     """GET GitHub API with retry/backoff and basic error classification."""
     import requests
@@ -2244,7 +2453,11 @@ def _github_get_with_retry(url, timeout=10, retries=3, sleeper=time.sleep):
                     delay = max(delay, float(retry_after))
                 except Exception:
                     pass
-            sleeper(delay)
+            # A long Retry-After (GitHub sends up to an hour) must not stall
+            # `watch` in a scheduled task; give up after a bounded wait.
+            if math.isnan(delay) or delay < 0:
+                delay = 2 ** (attempt - 1)
+            sleeper(min(delay, _MAX_RETRY_DELAY_SECONDS))
             continue
 
         return resp, None, attempt
@@ -2301,9 +2514,12 @@ def _cmd_check_update():
         return "error"
 
     if resp.status_code == 200:
-        data = resp.json()
-        latest = data.get("tag_name", "").lstrip("v")
-        body = data.get("body", "")
+        data = _json_object(resp)
+        if data is None:
+            print("[!] Could not check for updates (unexpected non-JSON response from GitHub)")
+            return "error"
+        latest = str(data.get("tag_name") or "").lstrip("v")
+        body = str(data.get("body") or "")
 
         if latest and _is_newer_version(latest, __version__):
             print(f"Latest version: v{latest} ← update available!")
@@ -2333,10 +2549,17 @@ def _cmd_check_update():
         )
         return "error"
     if resp2.status_code == 200:
-        commit = resp2.json()
-        sha = commit.get("sha", "")[:7]
-        msg = commit.get("commit", {}).get("message", "").split("\n")[0]
-        date = commit.get("commit", {}).get("committer", {}).get("date", "")[:10]
+        commit = _json_object(resp2)
+        if commit is None:
+            print("[!] Could not check for updates (unexpected non-JSON response from GitHub)")
+            return "error"
+        raw_info = commit.get("commit")
+        commit_info: dict = raw_info if isinstance(raw_info, dict) else {}
+        raw_committer = commit_info.get("committer")
+        committer: dict = raw_committer if isinstance(raw_committer, dict) else {}
+        sha = str(commit.get("sha") or "")[:7]
+        msg = str(commit_info.get("message") or "").split("\n")[0]
+        date = str(committer.get("date") or "")[:10]
         print(f"Latest commit: {sha} ({date}) {msg}")
         print()
         print(_UPDATE_INSTRUCTIONS)
@@ -2370,7 +2593,7 @@ def _cmd_watch():
 
     # Find broken channels (were working, now broken)
     for key, r in results.items():
-        if r["status"] in ("off", "error"):
+        if r["status"] in ("off", "error", "timeout"):
             issues.append(f"[X] {r['name']}: {r['message']}")
         elif r["status"] == "warn":
             issues.append(f"[!] {r['name']}: {r['message']}")
@@ -2384,13 +2607,13 @@ def _cmd_watch():
         timeout=10,
         retries=2,
     )
-    if not err and resp and resp.status_code == 200:
-        data = resp.json()
-        latest = data.get("tag_name", "").lstrip("v")
+    data = _json_object(resp) if not err and resp and resp.status_code == 200 else None
+    if data is not None:
+        latest = str(data.get("tag_name") or "").lstrip("v")
         if latest and _is_newer_version(latest, __version__):
             update_available = True
             new_version = latest
-            release_body = data.get("body", "")
+            release_body = str(data.get("body") or "")
 
     # Output
     if not issues and not update_available:

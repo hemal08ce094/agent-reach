@@ -43,6 +43,19 @@ def _reject_symlink(path: Path, label: str) -> None:
         raise ConfigSecurityError(str(exc)) from exc
 
 
+def _describe_yaml_error(exc: yaml.YAMLError) -> str:
+    """Describe a YAML error by position only.
+
+    ``str(MarkedYAMLError)`` embeds a snippet of the offending line, and the
+    config holds tokens and cookies, so never echo file content.
+    """
+    problem = getattr(exc, "problem", None) or type(exc).__name__
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    if mark is not None:
+        return f"{problem} (line {mark.line + 1}, column {mark.column + 1})"
+    return str(problem)
+
+
 def _atomic_write_yaml(target: Path, data: dict) -> None:
     """Atomically replace ``target`` with owner-only YAML.
 
@@ -60,7 +73,11 @@ def _atomic_write_yaml(target: Path, data: dict) -> None:
     try:
         if os.name != "nt" and hasattr(os, "fchmod"):
             os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        # From here the file object owns the descriptor; closing it twice
+        # (or leaking it when fchmod/fdopen fails) is prevented by fd = -1.
+        fd = -1
+        with handle:
             yaml.safe_dump(
                 data,
                 handle,
@@ -89,6 +106,11 @@ def _atomic_write_yaml(target: Path, data: dict) -> None:
             except OSError:
                 pass
     except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
@@ -130,23 +152,54 @@ class Config:
         _reject_symlink(self.config_dir, "config directory")
 
     def load(self):
-        """Load config from YAML file."""
-        _reject_symlink(self.config_dir, "config directory")
-        _reject_symlink(self.config_path, "config file")
+        """Load config from YAML file.
+
+        A read-only config follows symlinks (symlinked ``$HOME``, macOS
+        ``/var`` -> ``/private/var``, dotfile-managed directories) because it
+        can never write through them; the regular-file and size checks still
+        apply. A writable config keeps the strict no-follow rule so a later
+        save cannot be redirected.
+        """
+        follow = self.read_only
+        if not follow:
+            _reject_symlink(self.config_dir, "config directory")
+            _reject_symlink(self.config_path, "config file")
         try:
             payload = read_small_text_no_follow(
                 self.config_path,
                 max_bytes=_MAX_CONFIG_BYTES,
+                follow_symlinks=follow,
             )
         except PrivatePathError as exc:
             raise ConfigSecurityError(str(exc)) from exc
+        except UnicodeDecodeError as exc:
+            raise ConfigError(
+                f"{self.config_path} is not valid UTF-8: {exc.reason}"
+            ) from exc
+        except OSError as exc:
+            raise ConfigError(
+                f"Could not read {self.config_path}: {exc.strerror or exc}"
+            ) from exc
         if payload is None:
             self.data = {}
             return
 
-        loaded = yaml.safe_load(payload) or {}
+        try:
+            loaded = yaml.safe_load(payload)
+        except yaml.YAMLError as exc:
+            raise ConfigError(
+                f"{self.config_path} is not valid YAML: {_describe_yaml_error(exc)}"
+            ) from None
+        if loaded is None:
+            # An empty file (or one holding only comments) is an empty config.
+            loaded = {}
         if not isinstance(loaded, dict):
-            raise ConfigError("Config file top level must be a mapping")
+            # Never coerce [], false or 0 to {}: a later save would silently
+            # overwrite whatever the user meant to keep in the file.
+            raise ConfigError(
+                f"{self.config_path} top level must be a mapping "
+                f"(key: value pairs), got {type(loaded).__name__}"
+            )
         self.data = loaded
 
     def save(self):

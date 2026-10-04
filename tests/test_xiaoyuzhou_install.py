@@ -27,6 +27,7 @@ def test_install_xiaoyuzhou_deps_does_not_raise_when_no_groq_key(
         "expanduser",
         lambda value: value.replace("~", str(tmp_path)),
     )
+    monkeypatch.setenv("HOME", str(tmp_path))  # tools dir resolves via home_dir()
     with patch("agent_reach.config.Config", return_value=_DummyConfig()), patch(
         "shutil.which", return_value=None
     ):
@@ -51,6 +52,7 @@ def test_install_xiaoyuzhou_deps_replaces_stale_managed_script(
         "expanduser",
         lambda value: value.replace("~", str(tmp_path)),
     )
+    monkeypatch.setenv("HOME", str(tmp_path))  # tools dir resolves via home_dir()
     monkeypatch.setattr("agent_reach.config.Config", lambda: _DummyConfig())
     monkeypatch.setattr("shutil.which", lambda _name: None)
 

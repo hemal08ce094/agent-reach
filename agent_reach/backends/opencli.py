@@ -17,13 +17,17 @@ Probing notes (verified live):
     the browser actually loaded and enabled the extension.
 """
 
+import contextlib
 import glob
 import json
 import os
+import threading
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Dict, Iterator, Optional
 
 from agent_reach.probe import probe_command
+from agent_reach.utils.paths import home_dir
 
 OPENCLI_PACKAGE = "@jackwener/opencli"
 OPENCLI_EXTENSION_ID = "ildkmabpimmkaediidaifkhjpohdnifk"
@@ -36,17 +40,18 @@ OPENCLI_EXTENSION_URL = (
 # read-only observer, so strip the stale app setting only from its child probes.
 _UNSUPPORTED_APP_ENV = ("OPENCLI_DAEMON_PORT",)
 
-#: Chromium-family profile roots that contain <Profile>/Extensions/<id>/
+#: Chromium-family profile roots (relative to the home directory) that contain
+#: <Profile>/Extensions/<id>/
 _CHROME_PROFILE_ROOTS = (
-    "~/Library/Application Support/Google/Chrome",  # macOS Chrome
-    "~/Library/Application Support/Chromium",       # macOS Chromium
-    "~/Library/Application Support/Microsoft Edge",  # macOS Edge
-    "~/.config/google-chrome",                      # Linux Chrome
-    "~/.config/chromium",                           # Linux Chromium
-    "~/.config/microsoft-edge",                     # Linux Edge
+    "Library/Application Support/Google/Chrome",  # macOS Chrome
+    "Library/Application Support/Chromium",       # macOS Chromium
+    "Library/Application Support/Microsoft Edge",  # macOS Edge
+    ".config/google-chrome",                      # Linux Chrome
+    ".config/chromium",                           # Linux Chromium
+    ".config/microsoft-edge",                     # Linux Edge
 )
 
-_OPENCLI_UNPACKED_EXTENSION = "~/.opencli/extension"
+_OPENCLI_UNPACKED_EXTENSION = ".opencli/extension"
 _OPENCLI_DAEMON_STATUS_URL = "http://127.0.0.1:19825/status"
 _MAX_DAEMON_STATUS_BYTES = 64 * 1024
 
@@ -75,6 +80,25 @@ def _fetch_daemon_status(timeout: int = 2):
     return payload
 
 
+def _daemon_reports_extension_connected(daemon_status: dict) -> bool:
+    """True if the daemon reports a live extension connection.
+
+    OpenCLI >= 1.8 multi-profile daemons may keep the top-level
+    ``extensionConnected`` false (``profileRequired: true``) and report each
+    browser profile's connection under ``profiles``. Any connected profile is
+    live daemon evidence that a browser has loaded and enabled the extension.
+    """
+    if daemon_status.get("extensionConnected") is True:
+        return True
+    profiles = daemon_status.get("profiles")
+    if not isinstance(profiles, list):
+        return False
+    return any(
+        isinstance(profile, dict) and profile.get("extensionConnected") is True
+        for profile in profiles
+    )
+
+
 def _extension_installed_on_disk() -> bool:
     """True if store-installed OpenCLI files exist in a browser profile.
 
@@ -82,7 +106,8 @@ def _extension_installed_on_disk() -> bool:
     extension while stale files remain, so callers must not treat it as proof
     that the extension is loaded, connected, or usable.
     """
-    roots = [os.path.expanduser(p) for p in _CHROME_PROFILE_ROOTS]
+    home = os.fspath(home_dir())
+    roots = [os.path.join(home, p) for p in _CHROME_PROFILE_ROOTS]
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:  # Windows
         roots.append(os.path.join(local_app_data, "Google", "Chrome", "User Data"))
@@ -100,7 +125,7 @@ def _unpacked_extension_files_present() -> bool:
     existence never proves the user completed “Load unpacked” or left the
     extension enabled.
     """
-    unpacked = os.path.expanduser(_OPENCLI_UNPACKED_EXTENSION)
+    unpacked = os.path.join(os.fspath(home_dir()), _OPENCLI_UNPACKED_EXTENSION)
     return os.path.isfile(os.path.join(unpacked, "manifest.json"))
 
 
@@ -125,8 +150,61 @@ class OpenCLIStatus:
         return self.installed and not self.broken and self.extension_connected
 
 
+#: Per-run memo for opencli_status(). Six channels share the OpenCLI backend;
+#: within one doctor run they must not each spawn ``opencli --version`` and
+#: hit the daemon's ``/status`` endpoint. ``None`` means memoisation is off.
+_memo_lock = threading.Lock()
+#: Serialises memoised probes so concurrent channels share one probe.
+_probe_lock = threading.Lock()
+_memo_depth = 0
+_memo: Optional[Dict[int, OpenCLIStatus]] = None
+
+
+@contextlib.contextmanager
+def opencli_status_memo() -> Iterator[None]:
+    """Memoise opencli_status() for the duration of the block.
+
+    Re-entrant and thread-safe: the memo is cleared when the outermost block
+    starts and dropped when it ends, so every doctor run probes afresh.
+    """
+    global _memo, _memo_depth
+    with _memo_lock:
+        if _memo_depth == 0:
+            _memo = {}
+        _memo_depth += 1
+    try:
+        yield
+    finally:
+        with _memo_lock:
+            _memo_depth -= 1
+            if _memo_depth == 0:
+                _memo = None
+
+
 def opencli_status(timeout: int = 10) -> OpenCLIStatus:
-    """Probe OpenCLI install + daemon/extension state without side effects."""
+    """Probe OpenCLI install + daemon/extension state without side effects.
+
+    Inside :func:`opencli_status_memo` the first probe is shared by every
+    caller (concurrent callers wait for it instead of probing in parallel).
+    Callers receive a copy, so mutating the result never leaks across channels.
+    """
+    with _memo_lock:
+        memo_active = _memo is not None
+    if not memo_active:
+        return _probe_opencli_status(timeout)
+    with _probe_lock:
+        with _memo_lock:
+            cached = _memo.get(timeout) if _memo is not None else None
+        if cached is None:
+            cached = _probe_opencli_status(timeout)
+            with _memo_lock:
+                if _memo is not None:
+                    _memo[timeout] = cached
+    return replace(cached)
+
+
+def _probe_opencli_status(timeout: int) -> OpenCLIStatus:
+    """Run the actual OpenCLI probe (no memoisation)."""
     version_probe = probe_command(
         "opencli",
         ["--version"],
@@ -151,8 +229,8 @@ def opencli_status(timeout: int = 10) -> OpenCLIStatus:
     daemon_status = _fetch_daemon_status(timeout)
     if daemon_status is not None:
         st.daemon_running = True
-        st.extension_connected = bool(
-            daemon_status.get("extensionConnected")
+        st.extension_connected = _daemon_reports_extension_connected(
+            daemon_status
         )
 
     if not st.extension_connected:

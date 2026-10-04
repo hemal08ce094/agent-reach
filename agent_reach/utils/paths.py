@@ -61,8 +61,20 @@ def make_private_dir(path: str | Path) -> Path:
         dir_fd = os.open(target, flags)
         try:
             ensure_no_symlink_path(target, "private directory")
-            if hasattr(os, "fchmod"):
-                os.fchmod(dir_fd, 0o700)
+            # Skip the chmod when the directory is already owner-only: some
+            # sandboxes deny chmod even on the user's own directories, and a
+            # no-op change must not make configure/setup fail there.
+            current_mode = stat.S_IMODE(os.fstat(dir_fd).st_mode)
+            if current_mode != 0o700 and hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(dir_fd, 0o700)
+                except PermissionError as exc:
+                    from loguru import logger
+
+                    logger.warning(
+                        f"Could not restrict {target} to owner-only access "
+                        f"(mode {current_mode:o}): {exc}"
+                    )
         finally:
             os.close(dir_fd)
     return target
@@ -141,15 +153,25 @@ def read_small_text_no_follow(
     *,
     max_bytes: int,
     encoding: str = "utf-8",
+    follow_symlinks: bool = False,
 ) -> str | None:
-    """Read a bounded regular file while refusing every symlink component."""
+    """Read a bounded regular file while refusing every symlink component.
+
+    ``follow_symlinks=True`` is for read-only callers (doctor, read-only
+    config): symlinked homes, ``/var`` -> ``/private/var`` on macOS and
+    dotfile-managed config directories are then accepted. The regular-file
+    and size checks still apply to the final target. Writes must never use
+    this relaxation; they keep the strict no-follow rule.
+    """
     if max_bytes < 0:
         raise ValueError("max_bytes must be non-negative")
 
-    target = ensure_no_symlink_path(path, "read path")
+    target = Path(path)
+    if not follow_symlinks:
+        ensure_no_symlink_path(target, "read path")
     flags = (
         os.O_RDONLY
-        | getattr(os, "O_NOFOLLOW", 0)
+        | (0 if follow_symlinks else getattr(os, "O_NOFOLLOW", 0))
         | getattr(os, "O_NONBLOCK", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
@@ -176,7 +198,8 @@ def read_small_text_no_follow(
         payload = b"".join(chunks)
         if len(payload) > max_bytes:
             raise PrivatePathError(f"Read target exceeds the size limit: {target}")
-        ensure_no_symlink_path(target, "read path")
+        if not follow_symlinks:
+            ensure_no_symlink_path(target, "read path")
     finally:
         os.close(fd)
     return payload.decode(encoding)
@@ -191,6 +214,9 @@ def get_ytdlp_config_dir() -> Path:
     other while the real yt-dlp process silently ignores the setting.
     """
 
+    # Deliberately Path.home(), not home_dir(): yt-dlp resolves "~" with
+    # os.path.expanduser, which ignores HOME on Windows, and this path must be
+    # the one the real yt-dlp process reads.
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
     return config_home / "yt-dlp"
