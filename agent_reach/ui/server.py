@@ -9,11 +9,15 @@ Security model (this server can run installers and holds cookies):
   fragment (never sent to the server, so it never reaches access logs).
 * The Host header must be ``127.0.0.1:<port>`` or ``localhost:<port>``
   (DNS-rebinding defence) and any Origin header must be the same origin.
-* Mutating endpoints are POST-only with ``Content-Type: application/json``.
+* Mutating endpoints are POST, PATCH or DELETE; bodies must be
+  ``Content-Type: application/json``. The custom token header already forces
+  a CORS preflight, which a cross-origin page cannot pass.
 * Secrets are never returned: config keys are reported as set / not set.
   Values posted to ``/api/configure`` reach the CLI on stdin only.
 * Actions are an allowlist of argv lists built server-side (see ``jobs.py``).
 * Strict CSP, nosniff, no-referrer and no-store headers on every response.
+* Research routes (``research_api.py``) run only documented upstream commands
+  as argv lists and validate every URL as public before anything is fetched.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 from loguru import logger
 
 from agent_reach import __version__
+from agent_reach.research import BoardStore, ResearchError, ResearchManager, source_states
 from agent_reach.ui import catalog
 from agent_reach.ui.jobs import (
     JobError,
@@ -62,6 +67,8 @@ STATIC_FILES: Dict[str, str] = {
     "app.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "favicon.svg": "image/svg+xml",
+    "research.css": "text/css; charset=utf-8",
+    "research.js": "text/javascript; charset=utf-8",
 }
 
 
@@ -99,6 +106,8 @@ class DashboardState:
         check_all: Optional[Callable[..., Dict[str, dict]]] = None,
         check_one: Optional[Callable[..., Optional[dict]]] = None,
         configure_runner: Optional[Callable[[str, str], Tuple[int, str]]] = None,
+        research: Optional[ResearchManager] = None,
+        boards: Optional[BoardStore] = None,
     ):
         self.token = token or secrets.token_urlsafe(32)
         self.jobs = jobs or JobManager()
@@ -109,6 +118,8 @@ class DashboardState:
         self.last_doctor: Optional[Dict[str, Any]] = None
         self._doctor_lock = threading.Lock()
         self._env: Optional[str] = None
+        self.boards = boards or BoardStore()
+        self.research = research or ResearchManager(self.research_states, _read_config)
 
     # Library calls are resolved lazily so tests can patch agent_reach.doctor.
     def run_doctor(self) -> Dict[str, Any]:
@@ -119,6 +130,28 @@ class DashboardState:
             results = check_all(_read_config())
             self.last_doctor = {"results": results, "checked_at": time.time()}
             return self.last_doctor
+
+    def ensure_doctor(self) -> Dict[str, Any]:
+        """The latest doctor snapshot, running doctor once if there is none yet."""
+        from agent_reach import doctor
+
+        with self._doctor_lock:
+            if self.last_doctor is None:
+                check_all = self._check_all or doctor.check_all
+                results = check_all(_read_config())
+                self.last_doctor = {"results": results, "checked_at": time.time()}
+            return self.last_doctor
+
+    def research_states(self):
+        """Which research sources may run, from doctor's snapshot (runs doctor if needed)."""
+        return source_states(self.ensure_doctor()["results"], _read_config())
+
+    def research_backends(self) -> Dict[str, Optional[str]]:
+        """Active backend per source without starting doctor (used by exports)."""
+        if self.last_doctor is None:
+            return {}
+        states = source_states(self.last_doctor["results"], _read_config())
+        return {name: st.backend for name, st in states.items()}
 
     def run_check(self, name: str) -> Optional[dict]:
         from agent_reach import doctor
@@ -266,6 +299,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(exc.status, exc.message)
         except JobError as exc:
             self._error(exc.status, exc.message)
+        except ResearchError as exc:
+            self._error(exc.status, exc.message)
         except Exception as exc:  # noqa: BLE001 — never leak a traceback to the page
             logger.exception(f"ui handler error: {type(exc).__name__}")
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal error")
@@ -285,6 +320,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._dispatch("DELETE")
 
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._dispatch("PATCH")
+
     # ── static ──
 
     def _static(self, path: str) -> None:
@@ -302,6 +340,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── API ──
 
     def _api(self, method: str, path: str, query: Dict[str, List[str]]) -> None:
+        from agent_reach.ui.research_api import PREFIX, ResearchRoutes
+
+        if path.startswith(PREFIX):
+            ResearchRoutes(self).dispatch(method, path, query)
+            return
         routes_get = {
             "/api/status": self._get_status,
             "/api/channels": self._get_channels,
@@ -428,6 +471,7 @@ class DashboardServer(ThreadingHTTPServer):
 
     def server_close(self) -> None:
         self.state.jobs.shutdown()
+        self.state.research.shutdown()
         super().server_close()
 
 
