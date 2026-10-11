@@ -244,6 +244,15 @@ def main():
     # ── watch ──
     sub.add_parser("watch", help="Quick health check + update check (for scheduled tasks)")
 
+    # ── ui ──
+    p_ui = sub.add_parser("ui", help="Open the local web dashboard (127.0.0.1 only)")
+    p_ui.add_argument("--port", type=int, default=0,
+                      help="Port to listen on (default 0 = pick a free port)")
+    p_ui.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost"],
+                      help="Loopback address to bind (remote access is not supported)")
+    p_ui.add_argument("--no-open", action="store_true",
+                      help="Print the URL instead of opening a browser")
+
     # ── version ──
     sub.add_parser("version", help="Show version")
 
@@ -278,6 +287,9 @@ def main():
             p_conf.error("--platform/--profile require --from-browser")
         if args.sync_legacy_twitter and args.key != "twitter-cookies":
             p_conf.error("--sync-legacy-twitter is only valid with twitter-cookies")
+
+    if args.command == "ui" and not 0 <= args.port <= 65535:
+        p_ui.error("--port must be between 0 and 65535")
 
     if (
         args.command == "transcribe"
@@ -328,6 +340,8 @@ def _dispatch(args):
         _cmd_format(args)
     elif args.command == "transcribe":
         _cmd_transcribe(args)
+    elif args.command == "ui":
+        _cmd_ui(args)
 
 
 # ── Command handlers ────────────────────────────────
@@ -2218,6 +2232,15 @@ def _cmd_uninstall(args):
     print("  npm uninstall -g undici")
     if failed:
         raise SystemExit(1)
+
+
+def _cmd_ui(args):
+    """Serve the local dashboard until Ctrl+C."""
+    from agent_reach.ui.server import serve
+
+    code = serve(args.host, args.port, open_browser=not args.no_open)
+    if code:
+        raise SystemExit(code)
 
 
 def _cmd_doctor(args=None):

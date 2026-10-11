@@ -15,12 +15,101 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#supported-platforms">Platforms</a> · <a href="#design-philosophy">Philosophy</a> · <a href="#security">Security</a>
+  <a href="#quick-start">Quick Start</a> · <a href="#dashboard">Dashboard</a> · <a href="#how-it-works">How it works</a> · <a href="#supported-platforms">Platforms</a> · <a href="#security">Security</a>
 </p>
 
 > English fork of [Panniantong/Agent-Reach](https://github.com/Panniantong/Agent-Reach) (MIT), with translation, bug fixes and optimisations.
 
 > **No token or crypto affiliation:** Agent Reach has no official token, coin, investment product, fee-claim program, wallet connection, or Solana/Pump.fun project. Any crypto project using the Agent Reach name, GitHub URL, or author identity is not affiliated with this repository. Do not connect a wallet or claim fees based on messages, posts, or links that say otherwise.
+
+---
+
+## Dashboard
+
+Prefer a window to a terminal? `agent-reach ui` opens a local dashboard that shows the health of every channel, walks you through setup, runs installers with live output, and gives you copy-ready commands for your agent.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/dashboard-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/screenshots/dashboard-light.png">
+  <img alt="Agent Reach dashboard: channel list grouped by status on the left, Twitter/X details with setup form and agent commands on the right" src="docs/assets/screenshots/dashboard-light.png">
+</picture>
+
+<table>
+  <tr>
+    <td width="40%"><img alt="Reddit channel with its rendered setup guide" src="docs/assets/screenshots/channel-detail.png"></td>
+    <td width="40%"><img alt="Install job streaming live output in the jobs panel" src="docs/assets/screenshots/install-job.png"></td>
+    <td width="20%"><img alt="Dashboard on a 390px phone screen" src="docs/assets/screenshots/mobile-detail.png"></td>
+  </tr>
+  <tr>
+    <td>Setup guides and config keys (shown as set or not set, never the value)</td>
+    <td>Allowlisted installs with live output</td>
+    <td>Works on small screens</td>
+  </tr>
+</table>
+
+*Screenshots use demo data.*
+
+```bash
+agent-reach ui                 # opens http://127.0.0.1:<random port>/#token=...
+agent-reach ui --no-open       # just print the link (e.g. over SSH with port forwarding)
+agent-reach ui --port 8765     # pick a fixed port
+```
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` (or `j` / `k`) | Move through channels |
+| `Enter` | Open the selected channel |
+| `/` | Filter channels |
+| `r` | Run doctor again |
+| `Esc` | Clear the filter, close the jobs panel |
+
+Security model:
+
+- **Loopback only, one link per launch.** The server binds to `127.0.0.1` (remote hosts are refused) and every API call needs a random token that only lives in the printed link's `#fragment`, so it never reaches logs. Host and Origin headers are checked to block DNS rebinding and other sites.
+- **No free-form commands.** Buttons map to a fixed allowlist (`install --channels=<known channel>`, `skill --install/--uninstall`, `check-update`, `configure --from-browser` for Bilibili/Xueqiu) that runs the real `agent-reach` CLI as a subprocess, one job at a time, with no shell.
+- **Secrets stay put.** Keys and cookies are shown only as set / not set. Values you paste go to `agent-reach configure <key> --stdin`, never into process arguments or logs.
+
+---
+
+## How it works
+
+Agent Reach is a glue layer, not a wrapper. It picks, installs, configures and health-checks the best upstream tool for each platform, then gets out of the way: your agent calls those tools directly, guided by the `SKILL.md` that Agent Reach registers.
+
+```mermaid
+flowchart LR
+    you(["You or your agent"])
+    subgraph AR["Agent Reach (local)"]
+        cli["agent-reach CLI"]
+        ui["Dashboard<br/>agent-reach ui<br/>127.0.0.1 + per-launch token"]
+        core["doctor · installers · configure"]
+        cfg[("~/.agent-reach/config.yaml<br/>owner-only")]
+        skill["SKILL.md + references<br/>in agent skill folders"]
+    end
+    subgraph UP["Upstream tools"]
+        tools["yt-dlp · gh · twitter-cli · rdt-cli · bili-cli<br/>OpenCLI · mcporter / MCP servers (Exa, LinkedIn, Xiaohongshu)<br/>Jina Reader · feedparser · Groq Whisper"]
+    end
+    platforms(["GitHub · YouTube · Twitter/X · Reddit · Bilibili<br/>Xiaohongshu · RSS · any web page ..."])
+
+    you --> cli
+    you --> ui
+    ui -->|same CLI, run as a subprocess| cli
+    cli --> core
+    core -->|reads and writes| cfg
+    core -->|installs and probes| tools
+    core -->|registers| skill
+    skill -.->|teaches commands| you
+    you ==>|after setup, calls directly| tools
+    tools --> platforms
+```
+
+The lifecycle:
+
+1. **Install.** `agent-reach install --env=auto` only checks the environment. With `--system` (and optionally `--channels=twitter,reddit,...`) it installs the backends: gh and Node.js through your package manager, mcporter plus the Exa MCP server, and per-channel tools such as twitter-cli, rdt-cli, bili-cli or OpenCLI.
+2. **Doctor.** `agent-reach doctor` (or `--json`) probes every channel concurrently under a 30 s budget and reports ok / warn / off / error / timeout plus the `active_backend` that would serve it. Probes are read-only: they never import browser cookies or run commands that write remote state (for example, doctor never runs `gh auth status`).
+3. **Configure.** `agent-reach configure <key>` saves tokens and Cookie-Editor exports to `~/.agent-reach/config.yaml` (mode 600) through a hidden prompt or `--stdin`; `--from-browser` imports Bilibili or Xueqiu cookies only when you ask.
+4. **Skill registration.** `install --system` or `agent-reach skill --install` copies `SKILL.md` and its references into `~/.agents/skills`, `~/.claude/skills`, `~/.openclaw/skills` and `~/.config/opencode/skills`.
+5. **Agent use.** The agent reads the skill, checks `doctor --json` for the active backend, and runs the upstream command itself (`yt-dlp ...`, `twitter search ...`, `mcporter call exa.web_search_exa ...`). Agent Reach is not in that call path.
+6. **Stay healthy.** `agent-reach watch` (a quick health and update check for scheduled tasks) and `agent-reach check-update` tell you when a channel breaks or a new release ships; the dashboard shows the same doctor data with a Run doctor button.
 
 ---
 

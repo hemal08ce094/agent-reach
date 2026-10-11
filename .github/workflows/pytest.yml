@@ -81,6 +81,8 @@ jobs:
           assert "agent_reach/skill/SKILL.md" in names, "SKILL.md missing from wheel"
           for prefix in ("agent_reach/guides/", "agent_reach/scripts/", "agent_reach/skill/references/"):
               assert any(n.startswith(prefix) for n in names), f"{prefix} missing from wheel"
+          for asset in ("index.html", "app.css", "app.js", "favicon.svg"):
+              assert f"agent_reach/ui/static/{asset}" in names, f"dashboard {asset} missing from wheel"
           print(f"wheel OK: {len(names)} entries, no duplicates, data files present")
           PY
 
@@ -90,3 +92,5 @@ jobs:
           /tmp/smoke/bin/pip install --quiet dist/*.whl
           /tmp/smoke/bin/agent-reach version
           cd /tmp && /tmp/smoke/bin/python -c "import agent_reach; from importlib.resources import files; assert (files('agent_reach')/'skill'/'SKILL.md').is_file(); print('SKILL.md ships in site-packages OK')"
+          cd /tmp && /tmp/smoke/bin/python -c "from importlib.resources import files; assert (files('agent_reach.ui')/'static'/'app.js').is_file(); print('dashboard assets ship OK')"
+          /tmp/smoke/bin/agent-reach ui --help

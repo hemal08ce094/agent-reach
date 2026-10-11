@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Agent Reach</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-view="list">
+  <a class="skip-link" href="#detail">Skip to channel details</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+      <span class="brand-name">Agent Reach</span>
+      <span class="brand-version" id="version">&nbsp;</span>
+    </div>
+
+    <div class="health" id="health" aria-live="polite">
+      <div class="health-text">
+        <span class="health-count" id="health-count"><span class="skeleton skeleton-text w-6rem"></span></span>
+        <span class="health-checked" id="health-checked"></span>
+      </div>
+      <div class="health-bar" id="health-bar" role="img" aria-label="Channel health"></div>
+    </div>
+
+    <div class="topbar-actions">
+      <button type="button" class="btn btn-primary" id="run-doctor" aria-keyshortcuts="r">
+        <span class="btn-label">Run doctor</span>
+      </button>
+      <button type="button" class="btn btn-quiet" id="open-jobs" aria-controls="jobs" aria-expanded="false">
+        Jobs <span class="count-badge" id="jobs-badge" hidden>0</span>
+      </button>
+      <button type="button" class="btn btn-quiet" id="open-settings" aria-haspopup="dialog">Settings</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert" hidden>
+    <span id="banner-text"></span>
+    <button type="button" class="btn btn-small" id="banner-retry">Retry</button>
+  </div>
+
+  <main class="layout" id="layout">
+    <nav class="sidebar" aria-label="Channels">
+      <div class="filter">
+        <label class="visually-hidden" for="filter">Filter channels</label>
+        <input id="filter" class="input" type="search" placeholder="Filter channels" autocomplete="off" spellcheck="false" aria-keyshortcuts="/">
+        <kbd class="filter-kbd" aria-hidden="true">/</kbd>
+      </div>
+      <div class="channel-list" id="channel-list" role="listbox" aria-label="Channels" tabindex="0"></div>
+      <p class="list-hint">
+        <kbd>↑</kbd><kbd>↓</kbd> move <kbd>Enter</kbd> open <kbd>r</kbd> doctor
+      </p>
+    </nav>
+
+    <section class="detail" id="detail" tabindex="-1" aria-live="polite"></section>
+  </main>
+
+  <section class="jobs" id="jobs" aria-label="Jobs" hidden>
+    <div class="jobs-head">
+      <h2 class="jobs-title">Jobs</h2>
+      <div class="jobs-tabs" id="jobs-tabs" role="tablist" aria-label="Recent jobs"></div>
+      <button type="button" class="btn btn-quiet btn-small" id="close-jobs">Close</button>
+    </div>
+    <div class="jobs-body" id="jobs-body"></div>
+  </section>
+
+  <dialog class="sheet" id="settings" aria-labelledby="settings-title">
+    <div class="sheet-head">
+      <h2 id="settings-title">Settings</h2>
+      <button type="button" class="btn btn-quiet btn-small" id="close-settings">Close</button>
+    </div>
+    <div class="sheet-body" id="settings-body"></div>
+  </dialog>
+
+  <dialog class="confirm" id="confirm" aria-labelledby="confirm-title">
+    <div class="confirm-inner">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-text"></p>
+      <pre class="code-inline-block" id="confirm-command"></pre>
+      <div class="confirm-actions">
+        <button type="button" class="btn btn-quiet" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirm-ok">Run</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+</body>
+</html>

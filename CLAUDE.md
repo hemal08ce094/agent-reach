@@ -21,6 +21,7 @@ Repo: github.com/hemal08ce094/agent-reach | License: MIT | Version: 1.6.0
 - `agent_reach/channels/` — One file per platform (twitter.py, reddit.py, youtube.py, etc.)
 - `agent_reach/channels/base.py` — Base channel class (all channels inherit from this)
 - `agent_reach/integrations/mcp_server.py` — MCP server integration
+- `agent_reach/ui/` — Local web dashboard (`agent-reach ui`): `server.py` (stdlib HTTP server, token/Host/Origin checks), `jobs.py` (allowlisted CLI subprocess jobs), `catalog.py` (channel metadata from guides + skill references), `static/` (vanilla HTML/CSS/JS, no build step)
 - `agent_reach/skill/` — OpenClaw skill files
 - `agent_reach/guides/` — Usage guides
 - `tests/` — pytest tests

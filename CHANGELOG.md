@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## Unreleased
+
+### Added
+
+- **Local web dashboard: `agent-reach ui [--port N] [--no-open] [--host 127.0.0.1|localhost]`.**
+  Served from the package with the standard library (no new dependencies, no
+  CDN). It shows doctor results with a health bar, groups channels into Needs
+  attention / Ready / Not set up, renders each channel's setup guide, reports
+  config keys as set / not set, saves keys and cookies through
+  `configure <key> --stdin`, runs allowlisted jobs (install, skill
+  install/uninstall, check-update, Bilibili/Xueqiu browser cookie import) with
+  live output, re-tests a single channel, and offers copyable agent commands
+  taken from the skill references. Keyboard navigable, light/dark, works at
+  375px.
+- Dashboard security: loopback-only bind, a per-launch token passed in the URL
+  fragment and required on every API call, Host/Origin/Sec-Fetch-Site checks,
+  POST + JSON only for mutations, strict CSP with no inline script, secrets
+  never returned or put in process arguments, one job at a time (409 otherwise)
+  with timeouts.
+- `agent_reach.doctor.check_one(name, config)` checks a single channel with the
+  same timeout and error handling as `check_all`.
+- The wheel-gate CI job asserts the dashboard assets ship in the wheel.
+
+---
+
 ## 1.6.0 — English fork
 
 ### Translation
