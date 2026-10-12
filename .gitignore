@@ -13,3 +13,9 @@ build/
 .claude/settings.local.json
 uv.lock
 .venv/
+build-tools/
+DerivedData/
+.DS_Store
+xcuserdata/
+*.xcresult
+.build/
