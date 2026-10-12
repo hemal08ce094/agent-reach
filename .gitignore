@@ -19,3 +19,13 @@ DerivedData/
 xcuserdata/
 *.xcresult
 .build/
+*.xcuserstate
+.env.*
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+node_modules/
+*.ipa
+*.xcarchive
